@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Notewire — Quick Send</title>
+<meta name="description" content="Capture a thought, a photo, or a file and send it to yourself in one tap.">
+<meta name="theme-color" content="#121317">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Notewire">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+
+  <div class="topbar">
+    <h1>Notewire</h1>
+    <button class="icon-btn" data-tab="settings" id="topbar-settings"></button>
+  </div>
+
+  <div class="shell">
+    <nav class="rail">
+      <div class="brand"><div class="mark"></div><span>Notewire</span></div>
+      <button class="rail-item" data-tab="compose"></button>
+      <button class="rail-item" data-tab="history"></button>
+      <button class="rail-item" data-tab="settings"></button>
+    </nav>
+
+    <div class="panels two-pane">
+
+      <!-- Compose -->
+      <section class="panel active" id="panel-compose">
+        <div class="panel-header">
+          <h2>New note</h2>
+          <p>Type it, snap it, or attach it — one tap and it's on its way.</p>
+        </div>
+        <div class="compose-body">
+          <textarea id="note-text" placeholder="What's on your mind?" autofocus></textarea>
+          <div class="attachment-tray" id="attachment-tray"></div>
+        </div>
+        <div class="compose-bar">
+          <div class="tool-row">
+            <button class="tool-btn" id="tool-camera" title="Take a photo"></button>
+            <button class="tool-btn" id="tool-gallery" title="Add a photo"></button>
+            <button class="tool-btn" id="tool-file" title="Attach a file"></button>
+            <button class="tool-btn" id="tool-mic" title="Record a voice note"></button>
+            <button class="recipient-chip" id="recipient-chip">
+              <span class="avatar"></span><span class="label"></span>
+            </button>
+          </div>
+          <button class="send-btn" id="send-btn" disabled>Send</button>
+        </div>
+        <input type="file" id="file-camera" accept="image/*" capture="environment" class="hidden">
+        <input type="file" id="file-gallery" accept="image/*,video/*" multiple class="hidden">
+        <input type="file" id="file-any" multiple class="hidden">
+      </section>
+
+      <!-- History -->
+      <section class="panel" id="panel-history">
+        <div class="panel-header">
+          <h2>History</h2>
+          <p>Everything you've sent, in one place.</p>
+        </div>
+        <div class="filter-row" id="filter-row"></div>
+        <div class="history-scroll" id="history-scroll"></div>
+      </section>
+
+      <!-- Settings -->
+      <section class="panel" id="panel-settings">
+        <div class="panel-header">
+          <h2>Settings</h2>
+          <p>Manage who your notes go to.</p>
+        </div>
+        <div class="settings-scroll">
+
+          <div class="install-banner" id="install-banner">
+            <div class="txt"><b>Install Notewire</b>Add it to your home screen or taskbar for one-tap access.</div>
+            <button class="install-go" id="install-go">Install</button>
+          </div>
+
+          <div class="settings-group">
+            <div class="group-title">Streak</div>
+            <div class="streak">
+              <div class="streak-top">
+                <div class="streak-count"><span class="flame">●</span><span class="streak-count-num">0</span><span>day streak</span></div>
+              </div>
+              <div class="streak-days" id="streak-days"></div>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <div class="group-title">Recipients</div>
+            <div class="settings-card">
+              <div id="recipient-list"></div>
+              <div class="add-recipient-form">
+                <input type="text" id="new-recipient-name" placeholder="Name">
+                <input type="email" id="new-recipient-email" placeholder="Email address">
+                <button id="add-recipient-btn">Add recipient</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <div class="group-title">App</div>
+            <div class="settings-card">
+              <div class="settings-item">
+                <div>
+                  <div class="label">Install app</div>
+                  <div class="sub">Use Notewire like a native app</div>
+                </div>
+                <button class="remove" id="install-settings-btn" style="color:var(--accent-light)">Install</button>
+              </div>
+              <div class="settings-item">
+                <div>
+                  <div class="label">Clear history</div>
+                  <div class="sub">Remove every saved note from this device</div>
+                </div>
+                <button class="remove" id="clear-history-btn">Clear</button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <nav class="bottom-nav">
+    <button class="nav-btn active" data-tab="compose"><span class="ico"></span><span>Compose</span></button>
+    <button class="nav-btn" data-tab="history"><span class="ico"></span><span>History</span></button>
+    <button class="nav-btn" data-tab="settings"><span class="ico"></span><span>Settings</span></button>
+  </nav>
+
+</div>
+
+<div id="toast"></div>
+
+<script src="app.js"></script>
+<script>
+  // Fill in icon glyphs that need inline SVG (kept out of the main template above for readability)
+  (function () {
+    var glyphs = {
+      compose: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+      history: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 3"/></svg>',
+      settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>',
+      camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2Z"/><circle cx="12" cy="13" r="4"/></svg>',
+      image: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>',
+      file: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>',
+      mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>'
+    };
+    document.getElementById('topbar-settings').innerHTML = glyphs.settings;
+    document.querySelectorAll('.rail-item').forEach(function (b) {
+      var t = b.getAttribute('data-tab');
+      var icon = t === 'compose' ? glyphs.compose : t === 'history' ? glyphs.history : glyphs.settings;
+      var label = t.charAt(0).toUpperCase() + t.slice(1);
+      b.innerHTML = icon + '<span>' + label + '</span>';
+    });
+    document.querySelectorAll('.nav-btn').forEach(function (b) {
+      var t = b.getAttribute('data-tab');
+      var icon = t === 'compose' ? glyphs.compose : t === 'history' ? glyphs.history : glyphs.settings;
+      b.querySelector('.ico').innerHTML = icon;
+    });
+    document.getElementById('tool-camera').innerHTML = glyphs.camera;
+    document.getElementById('tool-gallery').innerHTML = glyphs.image;
+    document.getElementById('tool-file').innerHTML = glyphs.file;
+    document.getElementById('tool-mic').innerHTML = glyphs.mic;
+  })();
+</script>
+</body>
+</html>
