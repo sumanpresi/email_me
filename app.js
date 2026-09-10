@@ -12,24 +12,46 @@
   /* ---------------- storage ---------------- */
 
   const STORE_KEY = "notewire:v1";
+  const DEFAULT_SENDING_ACCOUNT = "sumanpresi86geology@gmail.com";
 
-  // Preloaded on first launch only — the person can edit or remove these,
-  // and add more, from Settings at any time.
-  const DEFAULT_RECIPIENTS = [
-    { id: uid(), name: "Primary", email: "sumanpresi86geology@gmail.com" },
-    { id: uid(), name: "Suman Das", email: "sumanpresi.geology@gmail.com" },
-  ];
+  // Preloaded on first launch only — the person can edit or remove this,
+  // and add more recipients, from Settings at any time.
+  const DEFAULT_RECIPIENT = { id: uid(), name: "Suman Das", email: "sumanpresi.geology@gmail.com" };
 
   function loadState() {
+    let s = null;
     try {
       const raw = localStorage.getItem(STORE_KEY);
-      if (raw) return JSON.parse(raw);
+      if (raw) s = JSON.parse(raw);
     } catch (e) { /* ignore corrupt state */ }
-    return {
-      recipients: DEFAULT_RECIPIENTS,
-      activeRecipientId: DEFAULT_RECIPIENTS[0].id,
-      notes: [],
-    };
+
+    if (!s) {
+      return {
+        sendingAccount: DEFAULT_SENDING_ACCOUNT,
+        recipients: [DEFAULT_RECIPIENT],
+        activeRecipientId: DEFAULT_RECIPIENT.id,
+        notes: [],
+      };
+    }
+
+    // Migrate state saved before "sending account" existed, where the
+    // sending address was accidentally stored as a regular recipient.
+    if (!s.sendingAccount) {
+      const recipients = s.recipients || [];
+      const idx = recipients.findIndex(r => r.email === DEFAULT_SENDING_ACCOUNT);
+      if (idx !== -1) {
+        s.sendingAccount = recipients[idx].email;
+        recipients.splice(idx, 1);
+        if (s.activeRecipientId && !recipients.find(r => r.id === s.activeRecipientId)) {
+          s.activeRecipientId = recipients[0] ? recipients[0].id : null;
+        }
+        s.recipients = recipients;
+      } else {
+        s.sendingAccount = DEFAULT_SENDING_ACCOUNT;
+      }
+    }
+    if (!s.recipients) s.recipients = [];
+    return s;
   }
 
   function saveState() {
@@ -293,37 +315,57 @@
     if (files.length) shareData.files = files;
 
     const canShareFiles = files.length && navigator.canShare && navigator.canShare({ files });
-    try {
-      if (navigator.share && (canShareFiles || (!files.length && (note.text || "")))) {
+    const canUseShare = navigator.share && (canShareFiles || (!files.length && note.text));
+
+    if (canUseShare) {
+      try {
         await navigator.share(shareData);
         markSent(note.id);
         toast("Sent");
         return;
-      }
-      throw new Error("share-unavailable");
-    } catch (err) {
-      if (err && err.name === "AbortError") {
-        toast("Send cancelled — saved to outbox");
-        renderHistory();
-        return;
-      }
-      // fallback: mailto (text only)
-      const recipient = activeRecipient();
-      if (recipient) {
-        const subject = encodeURIComponent(note.text ? note.text.slice(0, 60) : "Note from Notewire");
-        const bodyParts = [note.text || ""];
-        if (note.attachments.length) {
-          bodyParts.push("", `(${note.attachments.length} attachment${note.attachments.length > 1 ? "s" : ""} not included — open Notewire to view)`);
+      } catch (err) {
+        if (err && err.name === "AbortError") {
+          toast("Send cancelled — saved to outbox");
+          renderHistory();
+          return;
         }
-        const body = encodeURIComponent(bodyParts.join("\n"));
-        window.location.href = `mailto:${encodeURIComponent(recipient.email)}?subject=${subject}&body=${body}`;
-        markSent(note.id);
-        toast("Opened your mail app");
-      } else {
-        toast("Add a recipient in Settings to send by email");
-        renderHistory();
+        // otherwise fall through to the email fallback below
       }
     }
+
+    const recipient = activeRecipient();
+    if (!recipient) {
+      toast("Add a recipient in Settings to send by email");
+      renderHistory();
+      return;
+    }
+
+    const subject = note.text ? note.text.slice(0, 60) : "Note from Notewire";
+    const bodyLines = [note.text || ""];
+    if (note.attachments.length) {
+      bodyLines.push("", `(${note.attachments.length} attachment${note.attachments.length > 1 ? "s" : ""} not included — a compose link can't carry files. Open Notewire to view, or attach manually.)`);
+    }
+    const body = bodyLines.join("\n");
+    const toQ = encodeURIComponent(recipient.email);
+    const subjectQ = encodeURIComponent(subject);
+    const bodyQ = encodeURIComponent(body);
+
+    let opened = false;
+    if (state.sendingAccount) {
+      // Gmail's compose URL supports "authuser" to pick which signed-in
+      // Google account the message is composed from.
+      const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&tf=1&to=${toQ}&su=${subjectQ}&body=${bodyQ}&authuser=${encodeURIComponent(state.sendingAccount)}`;
+      const win = window.open(gmailUrl, "_blank", "noopener");
+      opened = !!win;
+      if (opened) toast(`Opened Gmail as ${state.sendingAccount}`);
+    }
+    if (!opened) {
+      // Pop-up blocked, or no sending account set — mailto always works,
+      // but the browser/OS decides which account handles it.
+      window.location.href = `mailto:${toQ}?subject=${subjectQ}&body=${bodyQ}`;
+      toast("Opened your mail app");
+    }
+    markSent(note.id);
   }
 
   function markSent(id) {
@@ -461,6 +503,7 @@
 
   function renderSettings() {
     renderStreak();
+    $("#sending-account-input").value = state.sendingAccount || "";
     const list = $("#recipient-list");
     list.innerHTML = "";
     if (!state.recipients.length) {
@@ -493,6 +536,18 @@
       });
       list.appendChild(item);
     });
+  }
+
+  function saveSendingAccount() {
+    const input = $("#sending-account-input");
+    const email = input.value.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      toast("Enter a valid email address");
+      return;
+    }
+    state.sendingAccount = email;
+    saveState();
+    toast("Sending account saved");
   }
 
   function addRecipient() {
@@ -571,6 +626,7 @@
     $("#recipient-chip").addEventListener("click", () => setTab("settings"));
 
     $("#add-recipient-btn").addEventListener("click", addRecipient);
+    $("#save-sending-account-btn").addEventListener("click", saveSendingAccount);
     $("#clear-history-btn").addEventListener("click", clearHistory);
     $("#install-go").addEventListener("click", doInstall);
     $("#install-settings-btn").addEventListener("click", doInstall);
