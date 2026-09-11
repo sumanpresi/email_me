@@ -1,4 +1,4 @@
-const CACHE = "notewire-v7";
+const CACHE = "notewire-v9";
 const ASSETS = [
   "./",
   "./index.html",

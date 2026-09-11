@@ -14,6 +14,7 @@
 <meta name="apple-mobile-web-app-title" content="Notewire">
 <link rel="stylesheet" href="styles.css">
 <script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
 <div id="app">
@@ -103,6 +104,40 @@
           <div class="install-banner" id="install-banner">
             <div class="txt"><b>Install Notewire</b>Add it to your home screen or taskbar for one-tap access.</div>
             <button class="install-go" id="install-go">Install</button>
+          </div>
+
+          <div class="settings-group">
+            <div class="group-title">Cloud sync</div>
+            <div class="settings-card">
+              <div id="cloud-config-form">
+                <div class="settings-item">
+                  <div>
+                    <div class="label">Supabase project</div>
+                    <div class="sub">One-time setup — paste the Project URL and anon key from your Supabase project's API settings</div>
+                  </div>
+                </div>
+                <div class="add-recipient-form">
+                  <input type="text" id="supabase-url-input" placeholder="https://xxxxx.supabase.co">
+                  <input type="text" id="supabase-key-input" placeholder="anon public key">
+                  <button id="save-supabase-config-btn">Connect</button>
+                </div>
+              </div>
+              <div id="cloud-auth-row" class="settings-item" style="display:none">
+                <div>
+                  <div class="label">Account</div>
+                  <div class="sub" id="cloud-auth-sub">Not signed in</div>
+                </div>
+                <div style="display:flex;gap:8px">
+                  <button class="connect-btn" id="cloud-signin-btn">Sign in with Google</button>
+                  <button class="remove" id="cloud-signout-btn" style="display:none">Sign out</button>
+                </div>
+              </div>
+              <div id="cloud-migrate-banner" class="install-banner" style="display:none;margin:0 16px 12px">
+                <div class="txt"><b>Local data found</b>Upload your existing contacts, groups and history to your cloud account?</div>
+                <button class="install-go" id="cloud-migrate-btn">Upload &amp; sync</button>
+              </div>
+              <div class="settings-note" id="cloud-sync-status">Not connected — Notewire is running in local-only mode on this device.</div>
+            </div>
           </div>
 
           <div class="settings-group">

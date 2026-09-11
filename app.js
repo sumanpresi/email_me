@@ -83,8 +83,107 @@
     try {
       localStorage.setItem(STORE_KEY, JSON.stringify(state));
     } catch (e) {
-      toast("Storage is full — try clearing old notes or attachments");
+      // This used to be the silent cause of "my group disappeared after
+      // refresh": the write failed (localStorage full) but nothing in memory
+      // knew that, so the UI kept showing data that was never actually saved.
+      console.error("Notewire: saveState failed — localStorage may be full", e);
+      toast("Could not save — storage is full. Clear some history/attachments in Settings.", 5000);
     }
+  }
+
+  /* ---------------- IndexedDB (attachment storage) ----------------
+     Photos/voice notes are stored here instead of inside the localStorage
+     JSON blob — that blob is what was silently overflowing and taking newly
+     created groups/contacts down with it. Contacts, groups and notes stay in
+     localStorage; only attachment file data lives here. */
+
+  const IDB_NAME = "notewire-files";
+  const IDB_STORE = "attachments";
+  let idbPromise = null;
+
+  function openIdb() {
+    if (idbPromise) return idbPromise;
+    idbPromise = new Promise((resolve, reject) => {
+      if (!window.indexedDB) { reject(new Error("IndexedDB unavailable")); return; }
+      const req = indexedDB.open(IDB_NAME, 1);
+      req.onupgradeneeded = () => { req.result.createObjectStore(IDB_STORE); };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+    return idbPromise;
+  }
+
+  async function idbPut(id, dataUrl) {
+    const db = await openIdb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      tx.objectStore(IDB_STORE).put(dataUrl, id);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function idbGet(id) {
+    const db = await openIdb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readonly");
+      const req = tx.objectStore(IDB_STORE).get(id);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  // Moves each attachment's dataUrl out of the (small, localStorage-bound)
+  // note object and into IndexedDB, returning lightweight references instead.
+  async function persistAttachments(atts) {
+    if (!atts || !atts.length) return [];
+    const out = [];
+    for (const a of atts) {
+      const fileId = uid();
+      try {
+        await idbPut(fileId, a.dataUrl);
+        out.push({ name: a.name, kind: a.kind, mime: a.mime, fileId });
+      } catch (e) {
+        console.error("Notewire: failed to store attachment in IndexedDB", e);
+        // Fall back to keeping it inline rather than silently losing it —
+        // only a real risk if IndexedDB itself is unavailable.
+        out.push(a);
+      }
+    }
+    return out;
+  }
+
+  // Resolves an attachment (old inline dataUrl, or new IndexedDB fileId) to a
+  // displayable/usable data URL.
+  async function resolveAttachmentDataUrl(att) {
+    if (att.dataUrl) return att.dataUrl;
+    if (att.fileId) {
+      try { return await idbGet(att.fileId); } catch (e) { return null; }
+    }
+    return null;
+  }
+
+  // One-time cleanup for anyone who already hit the bug: pulls any old inline
+  // dataUrls out of already-saved notes and into IndexedDB, shrinking the
+  // localStorage blob back down so future saves (new groups, contacts) stop
+  // silently failing.
+  async function migrateLegacyAttachmentsToIdb() {
+    let touched = false;
+    for (const note of state.notes) {
+      if (!note.attachments || !note.attachments.length) continue;
+      for (let i = 0; i < note.attachments.length; i++) {
+        const a = note.attachments[i];
+        if (a.dataUrl) {
+          const fileId = uid();
+          try {
+            await idbPut(fileId, a.dataUrl);
+            note.attachments[i] = { name: a.name, kind: a.kind, mime: a.mime, fileId };
+            touched = true;
+          } catch (e) { /* leave this one inline if IndexedDB isn't available */ }
+        }
+      }
+    }
+    if (touched) saveState();
   }
 
   const state = loadState();
@@ -154,15 +253,6 @@
       reader.onerror = reject;
       reader.readAsDataURL(file);
     });
-  }
-
-  function dataURLtoFile(dataUrl, filename, mime) {
-    const arr = dataUrl.split(",");
-    const bin = atob(arr[1]);
-    let n = bin.length;
-    const u8 = new Uint8Array(n);
-    while (n--) u8[n] = bin.charCodeAt(n);
-    return new File([u8], filename, { type: mime });
   }
 
   function categoryOf(note) {
@@ -303,9 +393,9 @@
         const res = await fetch(url, { headers: { Authorization: `Bearer ${contactsAccessToken}` } });
         if (!res.ok) throw new Error("People API error " + res.status);
         const data = await res.json();
-        (data.connections || []).forEach(p => {
+        for (const p of (data.connections || [])) {
           const name = p.names && p.names[0] && p.names[0].displayName;
-          if (!name) return;
+          if (!name) continue;
           const email = (p.emailAddresses && p.emailAddresses[0] && p.emailAddresses[0].value) || "";
           const rawPhone = (p.phoneNumbers && p.phoneNumbers[0] && p.phoneNumbers[0].value) || "";
           const phone = rawPhone ? normalizePhone(rawPhone) : "";
@@ -322,11 +412,17 @@
             existing.googleResourceName = resourceName;
             existing.source = "google";
             updated++;
+            if (cloudUser) cloudUpdateContact(existing, { name, email: email || null, phone: phone || null, photo: photo || null, source: "google", google_resource_name: resourceName });
           } else {
-            state.contacts.push({ id: uid(), name, email, phone, photo, favourite: false, groups: [], source: "google", googleResourceName: resourceName });
+            const newContact = { id: uid(), name, email, phone, photo, favourite: false, groups: [], source: "google", googleResourceName: resourceName };
+            if (cloudUser) {
+              try { const row = await cloudInsertContact(newContact); if (row) newContact.id = row.id; }
+              catch (e) { console.error(e); }
+            }
+            state.contacts.push(newContact);
             imported++;
           }
-        });
+        }
         pageToken = data.nextPageToken || "";
       } while (pageToken);
       saveState();
@@ -384,6 +480,305 @@
     return res.json();
   }
 
+  /* ================================================================
+     CLOUD SYNC (Supabase) — optional, off until a Supabase URL + anon key
+     are saved in Settings > Cloud sync. Signed out / unconfigured, Notewire
+     behaves exactly as it always has (local-only). This is a separate,
+     persistent login used only to know "which Notewire account is this" —
+     it never touches the short-lived, in-memory Gmail/Google Contacts
+     tokens above, which stay exactly as they were.
+     ================================================================ */
+
+  const CLOUD_CONFIG_KEY = "notewire:cloud-config";
+  let sb = null;
+  let cloudUser = null;
+
+  function loadCloudConfig() {
+    try { return JSON.parse(localStorage.getItem(CLOUD_CONFIG_KEY) || "null"); }
+    catch (e) { return null; }
+  }
+
+  function saveCloudConfig(url, key) {
+    localStorage.setItem(CLOUD_CONFIG_KEY, JSON.stringify({ url, key }));
+  }
+
+  function setCloudStatus(text) {
+    const el = $("#cloud-sync-status");
+    if (el) el.textContent = text;
+  }
+
+  function initSupabaseClient() {
+    const cfg = loadCloudConfig();
+    if (!cfg || !cfg.url || !cfg.key) return;
+    if (!window.supabase) { setCloudStatus("Cloud library failed to load — check your connection and refresh."); return; }
+    sb = window.supabase.createClient(cfg.url, cfg.key);
+    $("#cloud-config-form").style.display = "none";
+    $("#cloud-auth-row").style.display = "flex";
+    sb.auth.onAuthStateChange((event, session) => {
+      cloudUser = session ? session.user : null;
+      updateCloudAuthUI();
+      if (cloudUser) handleSignedIn(); else handleSignedOut();
+    });
+    sb.auth.getSession().then(({ data }) => {
+      cloudUser = data.session ? data.session.user : null;
+      updateCloudAuthUI();
+      if (cloudUser) handleSignedIn();
+    });
+  }
+
+  function updateCloudAuthUI() {
+    const sub = $("#cloud-auth-sub");
+    if (sub) sub.textContent = cloudUser ? `Signed in as ${cloudUser.email}` : "Not signed in";
+    const inBtn = $("#cloud-signin-btn"), outBtn = $("#cloud-signout-btn");
+    if (inBtn) inBtn.style.display = cloudUser ? "none" : "inline-flex";
+    if (outBtn) outBtn.style.display = cloudUser ? "inline-flex" : "none";
+  }
+
+  function saveSupabaseConfigFromInputs() {
+    const url = $("#supabase-url-input").value.trim();
+    const key = $("#supabase-key-input").value.trim();
+    if (!url || !key) { toast("Enter both the Project URL and anon key"); return; }
+    saveCloudConfig(url, key);
+    initSupabaseClient();
+    toast("Connected — sign in with Google to sync");
+  }
+
+  async function signInWithGoogleCloud() {
+    if (!sb) return;
+    setCloudStatus("Redirecting to Google…");
+    await sb.auth.signInWithOAuth({ provider: "google", options: { redirectTo: window.location.href } });
+  }
+
+  async function signOutCloud() {
+    if (!sb) return;
+    await sb.auth.signOut();
+    cloudUser = null;
+    updateCloudAuthUI();
+    setCloudStatus("Signed out — Notewire is running in local-only mode on this device.");
+    $("#cloud-migrate-banner").style.display = "none";
+  }
+
+  function localDataLooksNonTrivial() {
+    // More than just the single default seeded contact, or any groups/notes at all.
+    return state.groups.length > 0 || state.notes.length > 0 ||
+      state.contacts.some(c => c.email !== "sumanpresi.geology@gmail.com");
+  }
+
+  async function handleSignedIn() {
+    setCloudStatus("Syncing…");
+    try {
+      const cloudHasData = await loadCloudDataIntoState();
+      const migrated = localStorage.getItem(`notewire:migrated:${cloudUser.id}`);
+      if (!cloudHasData && !migrated && localDataLooksNonTrivial()) {
+        $("#cloud-migrate-banner").style.display = "flex";
+        setCloudStatus("Signed in — local data found, ready to upload.");
+      } else {
+        $("#cloud-migrate-banner").style.display = "none";
+        setCloudStatus(`Synced — last updated ${new Date().toLocaleString()}`);
+      }
+    } catch (e) {
+      console.error("Notewire cloud sync error", e);
+      setCloudStatus("Sync error — see browser console for details. Local data is safe.");
+    }
+    renderSettings();
+    onRecipientsChanged();
+    if (activeTab === "history") renderHistory();
+  }
+
+  function handleSignedOut() {
+    setCloudStatus("Signed out — Notewire is running in local-only mode on this device.");
+  }
+
+  // Fetches everything from Supabase and replaces local state with it (cloud
+  // is authoritative once signed in). Returns true if the cloud account
+  // already had any data.
+  async function loadCloudDataIntoState() {
+    const uidc = cloudUser.id;
+    const [{ data: contactsRows }, { data: groupsRows }, { data: membersRows }, { data: notesRows }, { data: recipRows }, { data: settingsRow }] = await Promise.all([
+      sb.from("contacts").select("*").eq("user_id", uidc),
+      sb.from("groups").select("*").eq("user_id", uidc),
+      sb.from("group_members").select("*").eq("user_id", uidc),
+      sb.from("notes").select("*").eq("user_id", uidc).order("note_timestamp", { ascending: false }),
+      sb.from("note_recipients").select("*").eq("user_id", uidc),
+      sb.from("settings").select("*").eq("user_id", uidc).maybeSingle(),
+    ]);
+
+    const hasData = !!((contactsRows && contactsRows.length) || (groupsRows && groupsRows.length) || (notesRows && notesRows.length));
+    if (!hasData) return false;
+
+    state.contacts = (contactsRows || []).map(r => ({
+      id: r.id, name: r.name, email: r.email || "", phone: r.phone || "",
+      photo: r.photo || "", favourite: !!r.favourite, source: r.source || "local",
+      googleResourceName: r.google_resource_name || undefined,
+      groups: (membersRows || []).filter(m => m.contact_id === r.id).map(m => m.group_id),
+    }));
+    state.groups = (groupsRows || []).map(r => ({ id: r.id, name: r.name }));
+    state.notes = (notesRows || []).map(r => {
+      const recips = (recipRows || []).filter(rr => rr.note_id === r.id);
+      const note = {
+        id: r.id, text: r.text || "", timestamp: new Date(r.note_timestamp).getTime(),
+        status: r.status, method: r.method, category: r.category,
+        cc: r.cc || undefined, bcc: r.bcc || undefined, subject: r.subject || undefined,
+        error: r.error || undefined, attachments: [],
+        recipients: recips.map(rr => ({ id: rr.contact_id, name: rr.name, email: rr.email, phone: rr.phone })),
+      };
+      if (r.method === "whatsapp") note.waStatuses = recips.map(rr => ({ contactId: rr.contact_id, name: rr.name, phone: rr.phone, status: rr.wa_status || "skipped" }));
+      return note;
+    });
+    if (settingsRow) {
+      state.sendingAccount = settingsRow.sending_account || state.sendingAccount;
+      state.whatsappNumber = settingsRow.whatsapp_number || state.whatsappNumber;
+      state.countryCode = settingsRow.country_code || state.countryCode;
+    }
+    saveState();
+    return true;
+  }
+
+  async function migrateLocalDataToCloud() {
+    if (!cloudUser) return;
+    setCloudStatus("Uploading local data…");
+    $("#cloud-migrate-btn").disabled = true;
+    const groupIdMap = {};
+    try {
+      for (const g of state.groups) {
+        const { data, error } = await sb.from("groups").insert({ user_id: cloudUser.id, name: g.name }).select().single();
+        if (!error && data) groupIdMap[g.id] = data.id;
+      }
+      for (const c of state.contacts) {
+        const { data, error } = await sb.from("contacts").insert({
+          user_id: cloudUser.id, name: c.name, email: c.email || null, phone: c.phone || null,
+          photo: c.photo || null, favourite: !!c.favourite, source: c.source || "local",
+          google_resource_name: c.googleResourceName || null,
+        }).select().single();
+        if (!error && data) {
+          for (const oldGroupId of (c.groups || [])) {
+            const newGroupId = groupIdMap[oldGroupId];
+            if (newGroupId) await sb.from("group_members").insert({ user_id: cloudUser.id, group_id: newGroupId, contact_id: data.id });
+          }
+        }
+      }
+      for (const n of state.notes) {
+        const { data, error } = await sb.from("notes").insert({
+          user_id: cloudUser.id, text: n.text || "", method: n.method, status: n.status,
+          category: n.category, cc: n.cc || null, bcc: n.bcc || null, subject: n.subject || null,
+          error: n.error || null, note_timestamp: new Date(n.timestamp).toISOString(),
+        }).select().single();
+        if (!error && data) {
+          for (const r of (n.recipients || [])) {
+            const waEntry = (n.waStatuses || []).find(s => s.contactId === r.id);
+            await sb.from("note_recipients").insert({
+              user_id: cloudUser.id, note_id: data.id, contact_id: null,
+              name: r.name, email: r.email || null, phone: r.phone || null,
+              wa_status: waEntry ? waEntry.status : null,
+            });
+          }
+        }
+      }
+      await sb.from("settings").upsert({
+        user_id: cloudUser.id, sending_account: state.sendingAccount || null,
+        whatsapp_number: state.whatsappNumber || null, country_code: state.countryCode || null,
+      });
+      localStorage.setItem(`notewire:migrated:${cloudUser.id}`, "1");
+      await loadCloudDataIntoState();
+      $("#cloud-migrate-banner").style.display = "none";
+      setCloudStatus(`Synced — uploaded ${new Date().toLocaleString()}`);
+      toast("Local data uploaded and synced");
+      renderSettings();
+      onRecipientsChanged();
+      if (activeTab === "history") renderHistory();
+    } catch (e) {
+      console.error("Notewire migration error", e);
+      toast("Upload failed — see browser console for details, your local data is untouched");
+      setCloudStatus("Upload failed — local data is safe, try again");
+    }
+    $("#cloud-migrate-btn").disabled = false;
+  }
+
+  // ---- Per-record cloud write-through helpers (no-ops when signed out) ----
+
+  async function cloudInsertContact(c) {
+    if (!cloudUser) return null;
+    const { data, error } = await sb.from("contacts").insert({
+      user_id: cloudUser.id, name: c.name, email: c.email || null, phone: c.phone || null,
+      photo: c.photo || null, favourite: !!c.favourite, source: c.source || "local",
+      google_resource_name: c.googleResourceName || null,
+    }).select().single();
+    if (error) throw error;
+    return data;
+  }
+
+  async function cloudUpdateContact(c, patch) {
+    if (!cloudUser) return;
+    try { await sb.from("contacts").update(patch).eq("id", c.id).eq("user_id", cloudUser.id); }
+    catch (e) { console.error("Notewire cloud update contact failed", e); }
+  }
+
+  async function cloudDeleteContact(id) {
+    if (!cloudUser) return;
+    try { await sb.from("contacts").delete().eq("id", id).eq("user_id", cloudUser.id); }
+    catch (e) { console.error("Notewire cloud delete contact failed", e); }
+  }
+
+  async function cloudInsertGroup(g) {
+    if (!cloudUser) return null;
+    const { data, error } = await sb.from("groups").insert({ user_id: cloudUser.id, name: g.name }).select().single();
+    if (error) throw error;
+    return data;
+  }
+
+  async function cloudDeleteGroup(id) {
+    if (!cloudUser) return;
+    try { await sb.from("groups").delete().eq("id", id).eq("user_id", cloudUser.id); }
+    catch (e) { console.error("Notewire cloud delete group failed", e); }
+  }
+
+  async function cloudSetGroupMember(groupId, contactId, isMember) {
+    if (!cloudUser) return;
+    try {
+      if (isMember) await sb.from("group_members").insert({ user_id: cloudUser.id, group_id: groupId, contact_id: contactId });
+      else await sb.from("group_members").delete().eq("group_id", groupId).eq("contact_id", contactId).eq("user_id", cloudUser.id);
+    } catch (e) { console.error("Notewire cloud group membership update failed", e); }
+  }
+
+  async function cloudInsertNote(note) {
+    if (!cloudUser) return;
+    try {
+      const { data, error } = await sb.from("notes").insert({
+        user_id: cloudUser.id, text: note.text || "", method: note.method, status: note.status,
+        category: note.category, cc: note.cc || null, bcc: note.bcc || null, subject: note.subject || null,
+        error: note.error || null, note_timestamp: new Date(note.timestamp).toISOString(),
+      }).select().single();
+      if (error) throw error;
+      note.id = data.id; // adopt the cloud-assigned id so later status updates target the right row
+      for (const r of (note.recipients || [])) {
+        const waEntry = (note.waStatuses || []).find(s => s.contactId === r.id);
+        await sb.from("note_recipients").insert({
+          user_id: cloudUser.id, note_id: data.id, contact_id: r.id || null,
+          name: r.name, email: r.email || null, phone: r.phone || null,
+          wa_status: waEntry ? waEntry.status : null,
+        });
+      }
+    } catch (e) { console.error("Notewire cloud note insert failed", e); }
+  }
+
+  async function cloudUpdateNoteStatus(note) {
+    if (!cloudUser) return;
+    try { await sb.from("notes").update({ status: note.status, error: note.error || null }).eq("id", note.id).eq("user_id", cloudUser.id); }
+    catch (e) { console.error("Notewire cloud note status update failed", e); }
+  }
+
+  async function cloudUpdateNoteRecipientStatus(noteId, contactId, status) {
+    if (!cloudUser) return;
+    try { await sb.from("note_recipients").update({ wa_status: status }).eq("note_id", noteId).eq("contact_id", contactId).eq("user_id", cloudUser.id); }
+    catch (e) { console.error("Notewire cloud recipient status update failed", e); }
+  }
+
+  async function cloudUpdateSettings(patch) {
+    if (!cloudUser) return;
+    try { await sb.from("settings").upsert({ user_id: cloudUser.id, ...patch }); }
+    catch (e) { console.error("Notewire cloud settings update failed", e); }
+  }
+
   /* ---------------- icons ---------------- */
 
   const ICONS = {
@@ -425,29 +820,39 @@
   function groupById(id) { return state.groups.find(g => g.id === id); }
   function groupMembers(groupId) { return state.contacts.filter(c => (c.groups || []).includes(groupId)); }
 
-  function addContact(name, email, phone) {
+  async function addContact(name, email, phone) {
     const c = { id: uid(), name, email: email || "", phone: phone ? normalizePhone(phone) : "", favourite: false, groups: [] };
+    if (cloudUser) {
+      try { const row = await cloudInsertContact(c); if (row) c.id = row.id; }
+      catch (e) { console.error(e); toast("Saved locally — cloud sync failed"); }
+    }
     state.contacts.push(c);
     saveState();
     return c;
   }
 
-  function removeContact(id) {
+  async function removeContact(id) {
     state.contacts = state.contacts.filter(c => c.id !== id);
     saveState();
+    await cloudDeleteContact(id);
   }
 
-  function addGroup(name) {
+  async function addGroup(name) {
     const g = { id: uid(), name };
+    if (cloudUser) {
+      try { const row = await cloudInsertGroup(g); if (row) g.id = row.id; }
+      catch (e) { console.error(e); toast("Saved locally — cloud sync failed"); }
+    }
     state.groups.push(g);
     saveState();
     return g;
   }
 
-  function removeGroup(id) {
+  async function removeGroup(id) {
     state.groups = state.groups.filter(g => g.id !== id);
     state.contacts.forEach(c => { c.groups = (c.groups || []).filter(gid => gid !== id); });
     saveState();
+    await cloudDeleteGroup(id);
   }
 
   /* ---------------- contact management (Settings) ---------------- */
@@ -477,6 +882,7 @@
         c.favourite = !c.favourite;
         saveState();
         renderContactManageList();
+        cloudUpdateContact(c, { favourite: c.favourite });
       });
       item.querySelector(".remove").addEventListener("click", () => {
         removeContact(c.id);
@@ -549,9 +955,11 @@
       `;
       row.querySelector("input").addEventListener("change", (e) => {
         c.groups = c.groups || [];
-        if (e.target.checked) { if (!c.groups.includes(groupId)) c.groups.push(groupId); }
+        const isMember = e.target.checked;
+        if (isMember) { if (!c.groups.includes(groupId)) c.groups.push(groupId); }
         else c.groups = c.groups.filter(id => id !== groupId);
         saveState();
+        cloudSetGroupMember(groupId, c.id, isMember);
       });
       listEl.appendChild(row);
     });
@@ -773,10 +1181,12 @@
         // exact href before we re-render (and possibly remove) this element.
         row.querySelector(".wa-open-btn").addEventListener("click", () => {
           setTimeout(() => {
+            const noteRef = currentWaNote;
             r.status = "opened";
             saveState();
             renderWaStatusList();
             checkWaNoteComplete();
+            if (noteRef) cloudUpdateNoteRecipientStatus(noteRef.id, r.contactId, "opened");
           }, 0);
         });
       }
@@ -904,7 +1314,7 @@
     if (!text && !pendingAttachments.length) return;
 
     if (sendMethod === "email") await sendEmail(text);
-    else sendWhatsApp(text);
+    else await sendWhatsApp(text);
   }
 
   function openGmailComposeFallback(toContacts, cc, bcc, subject, body) {
@@ -936,14 +1346,19 @@
 
     const note = {
       id: uid(),
-      text, attachments: pendingAttachments,
+      text,
       timestamp: Date.now(),
       status: "pending",
       method: "email",
       cc, bcc, subject,
       recipients: toContacts.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone })),
     };
-    note.category = categoryOf(note);
+    note.category = categoryOf({ ...note, attachments: pendingAttachments });
+    // Store only lightweight IndexedDB references in the note — this is what
+    // keeps big photos/voice notes from bloating the localStorage blob that
+    // contacts/groups/history also live in.
+    note.attachments = await persistAttachments(pendingAttachments);
+    await cloudInsertNote(note); // adopts the cloud-assigned id when signed in
     state.notes.unshift(note);
     saveState();
     resetComposeAfterSend();
@@ -954,10 +1369,13 @@
   async function deliverEmailNote(note, toContacts, skippedCount) {
     if (gmailAccessToken) {
       try {
+        const resolvedAttachments = await Promise.all(
+          (note.attachments || []).map(async a => ({ ...a, dataUrl: await resolveAttachmentDataUrl(a) }))
+        );
         await sendViaGmailApi({
           to: toContacts.map(c => c.email).join(","),
           cc: note.cc, bcc: note.bcc, subject: note.subject,
-          text: note.text, attachments: note.attachments,
+          text: note.text, attachments: resolvedAttachments,
         });
         note.status = "sent";
         toast(skippedCount ? `Email sent to ${toContacts.length} — skipped ${skippedCount} with no email` : "Email sent");
@@ -976,6 +1394,7 @@
       toast(opened ? `Gmail opened as ${state.sendingAccount || "your account"}` : "Pop-up blocked — opened your default mail app instead");
     }
     saveState();
+    cloudUpdateNoteStatus(note);
     if (activeTab === "history") renderHistory();
   }
 
@@ -986,10 +1405,11 @@
     openGmailComposeFallback(toContacts, note.cc, note.bcc, note.subject || (note.text || "").slice(0, 60), bodyLines.join("\n"));
     note.status = "gmail_opened";
     saveState();
+    cloudUpdateNoteStatus(note);
     renderHistory();
   }
 
-  function sendWhatsApp(text) {
+  async function sendWhatsApp(text) {
     // Only reached via the #send-btn button, which is only shown when there's
     // more than one WhatsApp-capable recipient (a single recipient uses the
     // real <a href> anchor instead — see handleWhatsAppSingleClick).
@@ -998,7 +1418,7 @@
 
     const note = {
       id: uid(),
-      text, attachments: pendingAttachments,
+      text,
       timestamp: Date.now(),
       status: "pending",
       method: "whatsapp",
@@ -1008,11 +1428,13 @@
         status: c.phone ? "ready" : "skipped",
       })),
     };
-    note.category = categoryOf(note);
+    note.category = categoryOf({ ...note, attachments: pendingAttachments });
 
     if (pendingAttachments.length) {
       toast(`Note: attachments aren't sent through the WhatsApp link — ${pendingAttachments.length > 1 ? "attach them" : "attach it"} manually in WhatsApp after it opens.`);
     }
+    note.attachments = await persistAttachments(pendingAttachments);
+    await cloudInsertNote(note); // adopts the cloud-assigned id when signed in
 
     state.notes.unshift(note);
     saveState();
@@ -1039,10 +1461,10 @@
     // Defer the note-save / form-reset by one tick: the browser reads this
     // anchor's href to navigate right after this click handler returns, so we
     // must not mutate anything on the page until that's already happened.
-    setTimeout(() => {
+    setTimeout(async () => {
       const note = {
         id: uid(),
-        text, attachments: attachmentsSnapshot,
+        text,
         timestamp: Date.now(),
         status: "whatsapp_opened",
         method: "whatsapp",
@@ -1052,10 +1474,12 @@
           status: c.id === target.id ? "opened" : (c.phone ? "ready" : "skipped"),
         })),
       };
-      note.category = categoryOf(note);
+      note.category = categoryOf({ ...note, attachments: attachmentsSnapshot });
       if (attachmentsSnapshot.length) {
         toast(`Note: attachments aren't sent through the WhatsApp link — attach ${attachmentsSnapshot.length > 1 ? "them" : "it"} manually in WhatsApp after it opens.`);
       }
+      note.attachments = await persistAttachments(attachmentsSnapshot);
+      await cloudInsertNote(note); // adopts the cloud-assigned id when signed in
       state.notes.unshift(note);
       saveState();
       resetComposeAfterSend();
@@ -1069,6 +1493,7 @@
     // navigation is never treated as a pop-up.
     note.status = "whatsapp_opened";
     saveState();
+    cloudUpdateNoteStatus(note);
     if (activeTab === "history") renderHistory();
   }
 
@@ -1143,14 +1568,13 @@
   function noteRowEl(note) {
     const row = document.createElement("div");
     row.className = "note-row";
-    let iconHTML = iconFor(note.category);
-    let imgThumb = "";
-    if (note.category === "images" && note.attachments && note.attachments[0]) imgThumb = `<img src="${note.attachments[0].dataUrl}" alt="">`;
+    const iconHTML = iconFor(note.category);
+    const hasImageAttachment = note.category === "images" && note.attachments && note.attachments[0];
     const methodTag = note.method === "whatsapp" ? "WhatsApp" : "Email";
     const needsRetry = note.status === "pending" || note.status === "failed";
     const offerGmailFallback = note.method === "email" && note.status === "failed";
     row.innerHTML = `
-      <div class="icon">${imgThumb || iconHTML}</div>
+      <div class="icon">${iconHTML}</div>
       <div class="body">
         <div class="title">${escapeHtml(methodTag)} · ${escapeHtml(noteTitle(note))}</div>
         <div class="meta">${noteStatusText(note)}</div>
@@ -1160,6 +1584,13 @@
         ${offerGmailFallback ? `<button class="retry">Open Gmail</button>` : ""}
       </div>
     `;
+    if (hasImageAttachment) {
+      // Thumbnails now live in IndexedDB, not inline in the note — resolve
+      // and swap in once it loads instead of blocking the row's render.
+      resolveAttachmentDataUrl(note.attachments[0]).then(url => {
+        if (url) row.querySelector(".icon").innerHTML = `<img src="${url}" alt="">`;
+      });
+    }
     const buttons = row.querySelectorAll(".retry");
     if (needsRetry) buttons[0].addEventListener("click", () => retrySend(note.id));
     if (offerGmailFallback) buttons[buttons.length - 1].addEventListener("click", () => openGmailInsteadForNote(note));
@@ -1262,6 +1693,7 @@
     if (!EMAIL_RE.test(email)) { toast("Enter a valid email address"); return; }
     state.sendingAccount = email;
     saveState();
+    cloudUpdateSettings({ sending_account: email });
     toast("Sending account saved");
   }
 
@@ -1269,6 +1701,7 @@
     const raw = $("#whatsapp-number-input").value.trim();
     state.whatsappNumber = raw ? normalizePhone(raw) : "";
     saveState();
+    cloudUpdateSettings({ whatsapp_number: state.whatsappNumber });
     toast("WhatsApp number saved");
   }
 
@@ -1276,6 +1709,7 @@
     const cc = $("#country-code-input").value.trim().replace(/\D/g, "");
     state.countryCode = cc || DEFAULT_COUNTRY_CODE;
     saveState();
+    cloudUpdateSettings({ country_code: state.countryCode });
   }
 
   function testWhatsApp() {
@@ -1284,23 +1718,23 @@
     if (!state.whatsappNumber) { toast("Add your WhatsApp number above first"); }
   }
 
-  function addContactFromSettings() {
+  async function addContactFromSettings() {
     const name = $("#new-contact-name").value.trim();
     const email = $("#new-contact-email").value.trim();
     const phone = $("#new-contact-phone").value.trim();
     if (!name) { toast("Enter a name"); return; }
     if (email && !EMAIL_RE.test(email)) { toast("Enter a valid email, or leave it blank"); return; }
     if (!email && !phone) { toast("Add an email, a phone number, or both"); return; }
-    addContact(name, email, phone);
+    await addContact(name, email, phone);
     $("#new-contact-name").value = ""; $("#new-contact-email").value = ""; $("#new-contact-phone").value = "";
     renderContactManageList();
     toast("Contact added");
   }
 
-  function addGroupFromSettings() {
+  async function addGroupFromSettings() {
     const name = $("#new-group-name").value.trim();
     if (!name) { toast("Enter a group name"); return; }
-    addGroup(name);
+    await addGroup(name);
     $("#new-group-name").value = "";
     renderGroupManageList();
     toast("Group created");
@@ -1384,6 +1818,10 @@
     $("#method-whatsapp").addEventListener("click", () => { if (!$("#method-whatsapp").disabled) { sendMethod = "whatsapp"; renderMethodButtons(); updateSendState(); } });
 
     // Settings
+    $("#save-supabase-config-btn").addEventListener("click", saveSupabaseConfigFromInputs);
+    $("#cloud-signin-btn").addEventListener("click", signInWithGoogleCloud);
+    $("#cloud-signout-btn").addEventListener("click", signOutCloud);
+    $("#cloud-migrate-btn").addEventListener("click", migrateLocalDataToCloud);
     $("#add-contact-btn").addEventListener("click", addContactFromSettings);
     $("#add-group-btn").addEventListener("click", addGroupFromSettings);
     $("#save-sending-account-btn").addEventListener("click", saveSendingAccount);
@@ -1402,6 +1840,19 @@
     renderAttachmentTray();
     renderStreak();
     setTab("compose");
+
+    // One-time cleanup for anyone who already hit the "group disappeared"
+    // localStorage-overflow bug — runs quietly in the background.
+    migrateLegacyAttachmentsToIdb().catch(() => {});
+
+    // Reconnect to Supabase automatically if this device was already set up
+    // (also handles the redirect back from Google after signInWithOAuth).
+    const savedCloudCfg = loadCloudConfig();
+    if (savedCloudCfg) {
+      $("#supabase-url-input").value = savedCloudCfg.url;
+      $("#supabase-key-input").value = savedCloudCfg.key;
+      initSupabaseClient();
+    }
 
     if (new URLSearchParams(location.search).get("compose") === "1") {
       $("#note-text").focus();
