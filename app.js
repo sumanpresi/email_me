@@ -220,9 +220,12 @@
   }
 
   function openWhatsApp(rawPhone, message) {
-    const win = window.open(waLink(rawPhone, message), WA_WINDOW_NAME, "noopener");
-    // A null return, or a window that is immediately closed, usually means a popup blocker stepped in.
+    // Deliberately no "noopener" here: that flag stops Chrome from reusing a
+    // window by name, which is exactly the reuse behaviour we want for multi-contact sends.
+    const win = window.open(waLink(rawPhone, message), WA_WINDOW_NAME);
+    // A null return usually means a popup blocker stepped in.
     if (!win) return "blocked";
+    try { win.focus(); } catch (e) { /* cross-origin focus can throw in some browsers — harmless */ }
     return "opened";
   }
 
