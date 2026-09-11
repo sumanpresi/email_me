@@ -13,6 +13,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Notewire">
 <link rel="stylesheet" href="styles.css">
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 <div id="app">
@@ -118,15 +119,35 @@
             <div class="settings-card">
               <div class="settings-item">
                 <div>
-                  <div class="label">Gmail account used to compose</div>
-                  <div class="sub">Notewire opens Gmail pre-filled from this account — see note below on how sending actually works</div>
+                  <div class="label">Gmail</div>
+                  <div class="sub" id="gmail-status-sub">Not connected</div>
+                </div>
+                <div style="display:flex;gap:8px">
+                  <button class="connect-btn" id="connect-gmail-btn">Connect Gmail</button>
+                  <button class="remove" id="disconnect-gmail-btn" style="display:none">Disconnect</button>
+                </div>
+              </div>
+              <div class="settings-item">
+                <div>
+                  <div class="label">Google Contacts</div>
+                  <div class="sub" id="contacts-status-sub">Not connected</div>
+                </div>
+                <div style="display:flex;gap:8px">
+                  <button class="connect-btn" id="connect-contacts-btn">Connect Google Contacts</button>
+                  <button class="remove" id="disconnect-contacts-btn" style="display:none">Disconnect</button>
+                </div>
+              </div>
+              <div class="settings-item">
+                <div>
+                  <div class="label">Fallback compose-from address</div>
+                  <div class="sub">Only used if Gmail isn't connected (opens a pre-filled Gmail window instead)</div>
                 </div>
               </div>
               <div class="add-recipient-form">
                 <input type="email" id="sending-account-input" placeholder="you@gmail.com">
                 <button id="save-sending-account-btn">Save</button>
               </div>
-              <div class="settings-note">Sending currently opens a pre-filled Gmail compose window from this account — you press Send inside Gmail. This build does not yet call the Gmail API directly (that needs a one-time Google Cloud OAuth setup); see the message below the app for how to add it.</div>
+              <div class="settings-note">Once Gmail is connected, "Send Email" calls the Gmail API directly and shows a real "Sent" only when Google confirms it — no password is ever entered here. The sign-in token lives only in this tab's memory, so you'll need to press Connect again after closing the app or after about an hour.</div>
             </div>
           </div>
 

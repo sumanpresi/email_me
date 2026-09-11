@@ -867,3 +867,15 @@ button {
   font-weight: 600;
   min-height: 34px;
 }
+
+.connect-btn {
+  background: var(--accent);
+  color: #17140d;
+  font-weight: 700;
+  padding: 9px 14px;
+  border-radius: var(--radius-s);
+  font-size: 0.82rem;
+  min-height: 38px;
+  white-space: nowrap;
+}
+.connect-btn:disabled { opacity: 0.5; }

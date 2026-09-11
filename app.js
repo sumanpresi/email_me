@@ -212,6 +212,179 @@
     return "opened";
   }
 
+  /* ---------------- Google sign-in (Gmail API + Google Contacts) ---------------- */
+
+  // Public — safe to ship in front-end code. No client secret is used anywhere:
+  // this is a browser-only token flow, so the token never touches a server.
+  const GOOGLE_CLIENT_ID = "399582350522-hiqi4bqev0kjqkt9iljd687qe3g13o9o.apps.googleusercontent.com";
+  const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.send";
+  const CONTACTS_SCOPE = "https://www.googleapis.com/auth/contacts.readonly";
+
+  // Access tokens live only in memory — never written to localStorage — and are
+  // gone on reload, matching "no OAuth secrets in storage".
+  let gmailTokenClient = null, gmailAccessToken = null, gmailConnectedEmail = null;
+  let contactsTokenClient = null, contactsAccessToken = null;
+
+  function googleReady() { return !!(window.google && google.accounts && google.accounts.oauth2); }
+
+  function connectGmail() {
+    if (!googleReady()) { toast("Google sign-in hasn't finished loading — try again in a moment"); return; }
+    if (!gmailTokenClient) {
+      gmailTokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: GMAIL_SCOPE,
+        callback: async (resp) => {
+          if (resp.error) { toast("Gmail connection failed: " + resp.error); return; }
+          gmailAccessToken = resp.access_token;
+          await fetchGmailProfile();
+          renderSettings();
+          toast(`Gmail connected${gmailConnectedEmail ? ": " + gmailConnectedEmail : ""}`);
+        },
+      });
+    }
+    gmailTokenClient.requestAccessToken({ prompt: gmailAccessToken ? "" : "consent" });
+  }
+
+  function disconnectGmail() {
+    if (gmailAccessToken && googleReady()) google.accounts.oauth2.revoke(gmailAccessToken, () => {});
+    gmailAccessToken = null;
+    gmailConnectedEmail = null;
+    renderSettings();
+    toast("Gmail disconnected");
+  }
+
+  async function fetchGmailProfile() {
+    try {
+      const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
+        headers: { Authorization: `Bearer ${gmailAccessToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        gmailConnectedEmail = data.emailAddress;
+        state.sendingAccount = gmailConnectedEmail;
+        saveState();
+      }
+    } catch (e) { /* leave gmailConnectedEmail unset — UI just won't show the address */ }
+  }
+
+  function connectContacts() {
+    if (!googleReady()) { toast("Google sign-in hasn't finished loading — try again in a moment"); return; }
+    if (!contactsTokenClient) {
+      contactsTokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: GOOGLE_CLIENT_ID,
+        scope: CONTACTS_SCOPE,
+        callback: async (resp) => {
+          if (resp.error) { toast("Google Contacts connection failed: " + resp.error); return; }
+          contactsAccessToken = resp.access_token;
+          renderSettings();
+          await importGoogleContacts();
+        },
+      });
+    }
+    contactsTokenClient.requestAccessToken({ prompt: contactsAccessToken ? "" : "consent" });
+  }
+
+  function disconnectContacts() {
+    if (contactsAccessToken && googleReady()) google.accounts.oauth2.revoke(contactsAccessToken, () => {});
+    contactsAccessToken = null;
+    renderSettings();
+    toast("Google Contacts disconnected");
+  }
+
+  async function importGoogleContacts() {
+    if (!contactsAccessToken) return;
+    toast("Importing Google Contacts…");
+    let pageToken = "", imported = 0, updated = 0;
+    try {
+      do {
+        const url = new URL("https://people.googleapis.com/v1/people/me/connections");
+        url.searchParams.set("personFields", "names,emailAddresses,phoneNumbers,photos");
+        url.searchParams.set("pageSize", "200");
+        if (pageToken) url.searchParams.set("pageToken", pageToken);
+        const res = await fetch(url, { headers: { Authorization: `Bearer ${contactsAccessToken}` } });
+        if (!res.ok) throw new Error("People API error " + res.status);
+        const data = await res.json();
+        (data.connections || []).forEach(p => {
+          const name = p.names && p.names[0] && p.names[0].displayName;
+          if (!name) return;
+          const email = (p.emailAddresses && p.emailAddresses[0] && p.emailAddresses[0].value) || "";
+          const rawPhone = (p.phoneNumbers && p.phoneNumbers[0] && p.phoneNumbers[0].value) || "";
+          const phone = rawPhone ? normalizePhone(rawPhone) : "";
+          const photo = (p.photos && p.photos[0] && p.photos[0].url) || "";
+          const resourceName = p.resourceName;
+          let existing = state.contacts.find(c => c.googleResourceName === resourceName);
+          if (!existing && email) existing = state.contacts.find(c => c.email === email);
+          if (!existing && phone) existing = state.contacts.find(c => c.phone === phone);
+          if (existing) {
+            existing.name = name;
+            if (email) existing.email = email;
+            if (phone) existing.phone = phone;
+            if (photo) existing.photo = photo;
+            existing.googleResourceName = resourceName;
+            existing.source = "google";
+            updated++;
+          } else {
+            state.contacts.push({ id: uid(), name, email, phone, photo, favourite: false, groups: [], source: "google", googleResourceName: resourceName });
+            imported++;
+          }
+        });
+        pageToken = data.nextPageToken || "";
+      } while (pageToken);
+      saveState();
+      renderContactManageList();
+      toast(`Google Contacts: ${imported} added, ${updated} updated`);
+    } catch (e) {
+      toast("Couldn't import Google Contacts — check the connection and try again");
+    }
+  }
+
+  function avatarHtml(c) {
+    if (c.photo) return `<img src="${c.photo}" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
+    return (c.name.trim()[0] || "?").toUpperCase();
+  }
+
+  // Builds an RFC 2822 message and base64url-encodes it the way the Gmail API's
+  // messages.send "raw" field requires.
+  function buildRawEmail({ to, cc, bcc, subject, text, attachments }) {
+    const boundary = "notewire_" + uid();
+    const headers = [`To: ${to}`];
+    if (cc) headers.push(`Cc: ${cc}`);
+    if (bcc) headers.push(`Bcc: ${bcc}`);
+    headers.push(`Subject: =?UTF-8?B?${btoa(unescape(encodeURIComponent(subject)))}?=`);
+    headers.push("MIME-Version: 1.0");
+
+    let mime;
+    if (attachments && attachments.length) {
+      headers.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+      let body = `--${boundary}\r\nContent-Type: text/plain; charset="UTF-8"\r\n\r\n${text || ""}\r\n`;
+      attachments.forEach(a => {
+        const base64 = a.dataUrl.split(",")[1];
+        body += `--${boundary}\r\nContent-Type: ${a.mime}; name="${a.name}"\r\nContent-Disposition: attachment; filename="${a.name}"\r\nContent-Transfer-Encoding: base64\r\n\r\n${base64}\r\n`;
+      });
+      body += `--${boundary}--`;
+      mime = headers.join("\r\n") + "\r\n\r\n" + body;
+    } else {
+      headers.push('Content-Type: text/plain; charset="UTF-8"');
+      mime = headers.join("\r\n") + "\r\n\r\n" + (text || "");
+    }
+    return btoa(unescape(encodeURIComponent(mime))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  async function sendViaGmailApi({ to, cc, bcc, subject, text, attachments }) {
+    const raw = buildRawEmail({ to, cc, bcc, subject, text, attachments });
+    const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${gmailAccessToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ raw }),
+    });
+    if (!res.ok) {
+      let msg = `Gmail API error ${res.status}`;
+      try { const err = await res.json(); if (err.error && err.error.message) msg = err.error.message; } catch (e) {}
+      throw new Error(msg);
+    }
+    return res.json();
+  }
+
   /* ---------------- icons ---------------- */
 
   const ICONS = {
@@ -371,7 +544,7 @@
       row.className = "contact-item";
       const checked = (c.groups || []).includes(groupId);
       row.innerHTML = `
-        <div class="avatar">${(c.name.trim()[0] || "?").toUpperCase()}</div>
+        <div class="avatar">${avatarHtml(c)}</div>
         <div class="info"><div class="name">${escapeHtml(c.name)}</div><div class="sub">${[c.email, c.phone].filter(Boolean).map(escapeHtml).join(" · ")}</div></div>
         <input type="checkbox" class="select-check" ${checked ? "checked" : ""}>
       `;
@@ -464,7 +637,7 @@
       row.className = "contact-item";
       const selected = pickerSelection.includes(c.id);
       row.innerHTML = `
-        <div class="avatar">${(c.name.trim()[0] || "?").toUpperCase()}</div>
+        <div class="avatar">${avatarHtml(c)}</div>
         <div class="info">
           <div class="name">${escapeHtml(c.name)}</div>
           <div class="sub">${[c.email, c.phone].filter(Boolean).map(escapeHtml).join(" · ") || "No email or phone"}</div>
@@ -679,36 +852,11 @@
     if (!selectedRecipients.length || !sendMethod) return;
     if (!text && !pendingAttachments.length) return;
 
-    if (sendMethod === "email") sendEmail(text);
+    if (sendMethod === "email") await sendEmail(text);
     else sendWhatsApp(text);
   }
 
-  function sendEmail(text) {
-    const toContacts = selectedRecipients.filter(c => c.email);
-    if (!toContacts.length) { toast("None of the selected contacts have an email address"); return; }
-    const skipped = selectedRecipients.filter(c => !c.email);
-
-    const cc = $("#email-cc").value.trim();
-    const bcc = $("#email-bcc").value.trim();
-    const subject = $("#email-subject").value.trim() || (text ? text.slice(0, 60) : "Message from Notewire");
-    const bodyLines = [text || ""];
-    if (pendingAttachments.length) {
-      bodyLines.push("", `(${pendingAttachments.length} attachment${pendingAttachments.length > 1 ? "s" : ""} can't travel through a Gmail compose link — attach ${pendingAttachments.length > 1 ? "them" : "it"} manually in Gmail, or add Gmail API sending later for automatic attachments.)`);
-    }
-    const body = bodyLines.join("\n");
-
-    const note = {
-      id: uid(),
-      text, attachments: pendingAttachments,
-      timestamp: Date.now(),
-      status: "pending",
-      method: "email",
-      recipients: toContacts.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone })),
-    };
-    note.category = categoryOf(note);
-    state.notes.unshift(note);
-    saveState();
-
+  function openGmailComposeFallback(toContacts, cc, bcc, subject, body) {
     const params = new URLSearchParams();
     params.set("view", "cm"); params.set("fs", "1"); params.set("tf", "1");
     params.set("to", toContacts.map(c => c.email).join(","));
@@ -718,20 +866,76 @@
     params.set("body", body);
     if (state.sendingAccount) params.set("authuser", state.sendingAccount);
     const gmailUrl = `https://mail.google.com/mail/?${params.toString()}`;
-
     const win = window.open(gmailUrl, "_blank", "noopener");
-    if (win) {
-      note.status = "gmail_opened";
-      toast(skipped.length ? `Gmail opened for ${toContacts.length} — skipped ${skipped.length} with no email` : `Gmail opened as ${state.sendingAccount}`);
-    } else {
+    if (!win) {
       // Pop-up blocked — mailto always works, though the OS/browser then decides which account handles it.
       window.location.href = `mailto:${toContacts.map(c => c.email).join(",")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}${cc ? "&cc=" + encodeURIComponent(cc) : ""}${bcc ? "&bcc=" + encodeURIComponent(bcc) : ""}`;
-      note.status = "gmail_opened";
-      toast("Pop-up blocked — opened your default mail app instead");
     }
+    return !!win;
+  }
+
+  async function sendEmail(text) {
+    const toContacts = selectedRecipients.filter(c => c.email);
+    if (!toContacts.length) { toast("None of the selected contacts have an email address"); return; }
+    const skipped = selectedRecipients.filter(c => !c.email);
+
+    const cc = $("#email-cc").value.trim();
+    const bcc = $("#email-bcc").value.trim();
+    const subject = $("#email-subject").value.trim() || (text ? text.slice(0, 60) : "Message from Notewire");
+
+    const note = {
+      id: uid(),
+      text, attachments: pendingAttachments,
+      timestamp: Date.now(),
+      status: "pending",
+      method: "email",
+      cc, bcc, subject,
+      recipients: toContacts.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone })),
+    };
+    note.category = categoryOf(note);
+    state.notes.unshift(note);
     saveState();
     resetComposeAfterSend();
+
+    await deliverEmailNote(note, toContacts, skipped.length);
+  }
+
+  async function deliverEmailNote(note, toContacts, skippedCount) {
+    if (gmailAccessToken) {
+      try {
+        await sendViaGmailApi({
+          to: toContacts.map(c => c.email).join(","),
+          cc: note.cc, bcc: note.bcc, subject: note.subject,
+          text: note.text, attachments: note.attachments,
+        });
+        note.status = "sent";
+        toast(skippedCount ? `Email sent to ${toContacts.length} — skipped ${skippedCount} with no email` : "Email sent");
+      } catch (err) {
+        note.status = "failed";
+        note.error = err.message;
+        toast("Gmail send failed: " + err.message);
+      }
+    } else {
+      const bodyLines = [note.text || ""];
+      if (note.attachments && note.attachments.length) {
+        bodyLines.push("", `(${note.attachments.length} attachment${note.attachments.length > 1 ? "s" : ""} can't travel through a Gmail compose link — attach ${note.attachments.length > 1 ? "them" : "it"} manually in Gmail, or connect Gmail in Settings for automatic attachments.)`);
+      }
+      const opened = openGmailComposeFallback(toContacts, note.cc, note.bcc, note.subject, bodyLines.join("\n"));
+      note.status = "gmail_opened";
+      toast(opened ? `Gmail opened as ${state.sendingAccount || "your account"}` : "Pop-up blocked — opened your default mail app instead");
+    }
+    saveState();
     if (activeTab === "history") renderHistory();
+  }
+
+  function openGmailInsteadForNote(note) {
+    const toContacts = note.recipients.filter(r => r.email).map(r => ({ email: r.email }));
+    const bodyLines = [note.text || ""];
+    if (note.attachments && note.attachments.length) bodyLines.push("", `(${note.attachments.length} attachment(s) — attach manually in Gmail.)`);
+    openGmailComposeFallback(toContacts, note.cc, note.bcc, note.subject || (note.text || "").slice(0, 60), bodyLines.join("\n"));
+    note.status = "gmail_opened";
+    saveState();
+    renderHistory();
   }
 
   function sendWhatsApp(text) {
@@ -804,16 +1008,10 @@
         }, i * 500);
       });
     } else {
-      const params = new URLSearchParams();
-      params.set("view", "cm"); params.set("fs", "1"); params.set("tf", "1");
-      params.set("to", n.recipients.map(r => r.email).filter(Boolean).join(","));
-      params.set("su", n.text ? n.text.slice(0, 60) : "Message from Notewire");
-      params.set("body", n.text || "");
-      if (state.sendingAccount) params.set("authuser", state.sendingAccount);
-      window.open(`https://mail.google.com/mail/?${params.toString()}`, "_blank", "noopener");
-      n.status = "gmail_opened";
-      saveState();
+      const toContacts = n.recipients.filter(r => r.email);
+      n.status = "pending";
       renderHistory();
+      deliverEmailNote(n, toContacts, n.recipients.length - toContacts.length);
     }
   }
 
@@ -850,6 +1048,7 @@
   function noteStatusText(note) {
     const names = (note.recipients || []).map(r => r.name).join(", ") || "recipient";
     if (note.status === "pending") return `<span class="status-pending">Sending to ${escapeHtml(names)}…</span>`;
+    if (note.status === "sent") return `Email sent to ${escapeHtml(names)} · ${timeAgo(note.timestamp)}`;
     if (note.status === "gmail_opened") return `Gmail opened for ${escapeHtml(names)} · ${timeAgo(note.timestamp)}`;
     if (note.status === "whatsapp_opened") {
       if (note.recipients.length > 1) return `WhatsApp opened for all ${note.recipients.length} contacts · ${timeAgo(note.timestamp)}`;
@@ -859,7 +1058,7 @@
       const opened = (note.waStatuses || []).filter(s => s.status === "opened").length;
       return `${opened} of ${note.recipients.length} opened, rest blocked/skipped · ${timeAgo(note.timestamp)}`;
     }
-    if (note.status === "failed") return `Failed to open for ${escapeHtml(names)} · ${timeAgo(note.timestamp)}`;
+    if (note.status === "failed") return `Failed${note.error ? ": " + escapeHtml(note.error) : ""} · ${timeAgo(note.timestamp)}`;
     return `${escapeHtml(names)} · ${timeAgo(note.timestamp)}`;
   }
 
@@ -871,15 +1070,21 @@
     if (note.category === "images" && note.attachments && note.attachments[0]) imgThumb = `<img src="${note.attachments[0].dataUrl}" alt="">`;
     const methodTag = note.method === "whatsapp" ? "WhatsApp" : "Email";
     const needsRetry = note.status === "pending" || note.status === "failed" || note.status === "partial";
+    const offerGmailFallback = note.method === "email" && note.status === "failed";
     row.innerHTML = `
       <div class="icon">${imgThumb || iconHTML}</div>
       <div class="body">
         <div class="title">${escapeHtml(methodTag)} · ${escapeHtml(noteTitle(note))}</div>
         <div class="meta">${noteStatusText(note)}</div>
       </div>
-      ${needsRetry ? `<button class="retry">Retry</button>` : ""}
+      <div style="display:flex;gap:6px">
+        ${needsRetry ? `<button class="retry">Retry</button>` : ""}
+        ${offerGmailFallback ? `<button class="retry">Open Gmail</button>` : ""}
+      </div>
     `;
-    if (needsRetry) row.querySelector(".retry").addEventListener("click", () => retrySend(note.id));
+    const buttons = row.querySelectorAll(".retry");
+    if (needsRetry) buttons[0].addEventListener("click", () => retrySend(note.id));
+    if (offerGmailFallback) buttons[buttons.length - 1].addEventListener("click", () => openGmailInsteadForNote(note));
     return row;
   }
 
@@ -954,6 +1159,14 @@
     $("#country-code-input").value = state.countryCode || DEFAULT_COUNTRY_CODE;
     renderContactManageList();
     renderGroupManageList();
+
+    $("#gmail-status-sub").textContent = gmailAccessToken ? `Connected: ${gmailConnectedEmail || "…"}` : "Not connected";
+    $("#connect-gmail-btn").style.display = gmailAccessToken ? "none" : "inline-flex";
+    $("#disconnect-gmail-btn").style.display = gmailAccessToken ? "inline-flex" : "none";
+
+    $("#contacts-status-sub").textContent = contactsAccessToken ? "Connected" : "Not connected";
+    $("#connect-contacts-btn").textContent = contactsAccessToken ? "Re-import contacts" : "Connect Google Contacts";
+    $("#disconnect-contacts-btn").style.display = contactsAccessToken ? "inline-flex" : "none";
   }
 
   function saveSendingAccount() {
@@ -1085,6 +1298,10 @@
     $("#add-contact-btn").addEventListener("click", addContactFromSettings);
     $("#add-group-btn").addEventListener("click", addGroupFromSettings);
     $("#save-sending-account-btn").addEventListener("click", saveSendingAccount);
+    $("#connect-gmail-btn").addEventListener("click", connectGmail);
+    $("#disconnect-gmail-btn").addEventListener("click", disconnectGmail);
+    $("#connect-contacts-btn").addEventListener("click", connectContacts);
+    $("#disconnect-contacts-btn").addEventListener("click", disconnectContacts);
     $("#save-whatsapp-number-btn").addEventListener("click", saveWhatsappNumber);
     $("#country-code-input").addEventListener("change", saveCountryCode);
     $("#test-wa-btn").addEventListener("click", testWhatsApp);
