@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Notewire — Quick Send</title>
-<meta name="description" content="Capture a thought, a photo, or a file and send it to yourself in one tap.">
+<title>Notewire — Email or WhatsApp</title>
+<meta name="description" content="Write a message, pick a contact, send it by Gmail or WhatsApp.">
 <meta name="theme-color" content="#121317">
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icons/icon-192.png">
@@ -35,24 +35,45 @@
       <!-- Compose -->
       <section class="panel active" id="panel-compose">
         <div class="panel-header">
-          <h2>New note</h2>
-          <p>Type it, snap it, or attach it — one tap and it's on its way.</p>
+          <h2>New message</h2>
+          <p>Pick a contact, choose Email or WhatsApp, and send.</p>
         </div>
+
         <div class="compose-body">
-          <textarea id="note-text" placeholder="What's on your mind?" autofocus></textarea>
+
+          <div class="field-row">
+            <div class="field-label">To</div>
+            <button class="select-contact-btn" id="select-contact-btn">Select contact</button>
+          </div>
+          <div class="selected-recipients" id="selected-recipients"></div>
+
+          <div class="field-row method-row" id="method-row" style="display:none">
+            <div class="field-label">Send via</div>
+            <div class="method-toggle" id="method-toggle">
+              <button class="method-btn" data-method="email" id="method-email">Email</button>
+              <button class="method-btn" data-method="whatsapp" id="method-whatsapp">WhatsApp</button>
+            </div>
+          </div>
+
+          <div id="email-fields" class="email-fields" style="display:none">
+            <div class="mini-field"><label>Cc</label><input type="text" id="email-cc" placeholder="Optional"></div>
+            <div class="mini-field"><label>Bcc</label><input type="text" id="email-bcc" placeholder="Optional"></div>
+            <div class="mini-field"><label>Subject</label><input type="text" id="email-subject" placeholder="Subject"></div>
+          </div>
+
+          <textarea id="note-text" placeholder="Write your message…" autofocus></textarea>
           <div class="attachment-tray" id="attachment-tray"></div>
+          <div class="wa-status-list" id="wa-status-list"></div>
         </div>
+
         <div class="compose-bar">
           <div class="tool-row">
             <button class="tool-btn" id="tool-camera" title="Take a photo"></button>
             <button class="tool-btn" id="tool-gallery" title="Add a photo"></button>
             <button class="tool-btn" id="tool-file" title="Attach a file"></button>
             <button class="tool-btn" id="tool-mic" title="Record a voice note"></button>
-            <button class="recipient-chip" id="recipient-chip">
-              <span class="avatar"></span><span class="label"></span>
-            </button>
           </div>
-          <button class="send-btn" id="send-btn" disabled>Send</button>
+          <button class="send-btn" id="send-btn" disabled>Select a contact</button>
         </div>
         <input type="file" id="file-camera" accept="image/*" capture="environment" class="hidden">
         <input type="file" id="file-gallery" accept="image/*,video/*" multiple class="hidden">
@@ -73,7 +94,7 @@
       <section class="panel" id="panel-settings">
         <div class="panel-header">
           <h2>Settings</h2>
-          <p>Manage who your notes go to.</p>
+          <p>Manage your accounts, contacts and groups.</p>
         </div>
         <div class="settings-scroll">
 
@@ -93,29 +114,76 @@
           </div>
 
           <div class="settings-group">
-            <div class="group-title">Sending account</div>
+            <div class="group-title">Google account</div>
             <div class="settings-card">
               <div class="settings-item">
                 <div>
-                  <div class="label">Compose emails as</div>
-                  <div class="sub">The Google account used when Notewire opens Gmail to send</div>
+                  <div class="label">Gmail account used to compose</div>
+                  <div class="sub">Notewire opens Gmail pre-filled from this account — see note below on how sending actually works</div>
                 </div>
               </div>
               <div class="add-recipient-form">
                 <input type="email" id="sending-account-input" placeholder="you@gmail.com">
                 <button id="save-sending-account-btn">Save</button>
               </div>
+              <div class="settings-note">Sending currently opens a pre-filled Gmail compose window from this account — you press Send inside Gmail. This build does not yet call the Gmail API directly (that needs a one-time Google Cloud OAuth setup); see the message below the app for how to add it.</div>
             </div>
           </div>
 
           <div class="settings-group">
-            <div class="group-title">Recipients</div>
+            <div class="group-title">WhatsApp</div>
             <div class="settings-card">
-              <div id="recipient-list"></div>
+              <div class="settings-item">
+                <div>
+                  <div class="label">Your WhatsApp number</div>
+                  <div class="sub">Used only for the "Test WhatsApp" button</div>
+                </div>
+              </div>
               <div class="add-recipient-form">
-                <input type="text" id="new-recipient-name" placeholder="Name">
-                <input type="email" id="new-recipient-email" placeholder="Email address">
-                <button id="add-recipient-btn">Add recipient</button>
+                <input type="text" id="whatsapp-number-input" placeholder="+91XXXXXXXXXX">
+                <button id="save-whatsapp-number-btn">Save</button>
+              </div>
+              <div class="settings-item">
+                <div>
+                  <div class="label">Default country code</div>
+                  <div class="sub">Used when a saved number has no country code</div>
+                </div>
+                <input type="text" id="country-code-input" style="width:56px;text-align:center;background:var(--surface-raised);border:1px solid var(--border);border-radius:8px;color:var(--text);padding:6px" placeholder="91">
+              </div>
+              <button class="test-wa-btn" id="test-wa-btn">Test WhatsApp</button>
+              <div class="settings-note">Notewire never asks for your WhatsApp password, OTP or QR session — it only opens the normal WhatsApp click-to-chat link with your message pre-filled. You always press Send yourself.</div>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <div class="group-title">Contacts</div>
+            <div class="settings-card">
+              <div id="contact-manage-list"></div>
+              <div class="add-recipient-form contact-add-form">
+                <input type="text" id="new-contact-name" placeholder="Name">
+                <input type="email" id="new-contact-email" placeholder="Email (optional)">
+                <input type="text" id="new-contact-phone" placeholder="Phone (optional)">
+                <button id="add-contact-btn">Add contact</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <div class="group-title">Contact groups</div>
+            <div class="settings-card">
+              <div id="group-manage-list"></div>
+              <div class="add-recipient-form">
+                <input type="text" id="new-group-name" placeholder="Group name (e.g. GSI Officers)">
+                <button id="add-group-btn">Create group</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-group">
+            <div class="group-title">Security</div>
+            <div class="settings-card">
+              <div class="settings-note" style="padding:14px 16px">
+                No Gmail or WhatsApp password is ever requested or stored. No OAuth tokens or API secrets are stored in this app. Contacts and groups live only in this browser's local storage, on this device.
               </div>
             </div>
           </div>
@@ -152,6 +220,30 @@
     <button class="nav-btn" data-tab="settings"><span class="ico"></span><span>Settings</span></button>
   </nav>
 
+</div>
+
+<!-- Contact picker modal -->
+<div class="modal-overlay" id="contact-modal">
+  <div class="modal-panel">
+    <div class="modal-header">
+      <h3 id="modal-title">Select contact</h3>
+      <button class="modal-close" id="modal-close">✕</button>
+    </div>
+    <input type="search" id="contact-search" class="contact-search" placeholder="Search name, email or phone">
+    <div class="modal-tabs">
+      <button class="mtab active" data-mtab="all">All</button>
+      <button class="mtab" data-mtab="fav">Favourites</button>
+      <button class="mtab" data-mtab="groups">Groups</button>
+    </div>
+    <div class="contact-list" id="contact-list"></div>
+    <div class="modal-footer">
+      <label class="multi-toggle-label">
+        <input type="checkbox" id="multi-toggle-check">
+        <span>Select multiple (for WhatsApp)</span>
+      </label>
+      <button class="confirm-select-btn" id="confirm-select-btn" disabled>Select</button>
+    </div>
+  </div>
 </div>
 
 <div id="toast"></div>
