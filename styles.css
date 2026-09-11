@@ -335,6 +335,7 @@ button {
 .send-btn {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
   background: var(--accent);
   color: #17140d;
@@ -343,6 +344,8 @@ button {
   padding: 11px 20px;
   border-radius: 999px;
   flex-shrink: 0;
+  text-decoration: none;
+  cursor: pointer;
   transition: transform .12s ease, opacity .12s ease;
 }
 .send-btn svg { width: 16px; height: 16px; }
@@ -850,6 +853,11 @@ button {
   font-size: 0.85rem;
   font-weight: 600;
   min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  width: fit-content;
 }
 
 .contact-manage-item .fav-toggle {
@@ -884,8 +892,16 @@ button {
   background: var(--accent);
   color: #17140d;
   font-weight: 700;
-  padding: 6px 14px;
+  padding: 8px 16px;
   border-radius: var(--radius-s);
   font-size: 0.78rem;
-  min-height: 32px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.send-btn.link-disabled {
+  opacity: 0.4;
+  pointer-events: none;
 }
