@@ -18,13 +18,10 @@
   const STORE_KEY = "notewire:v2";
   const OLD_STORE_KEY = "notewire:v1";
   const DEFAULT_SENDING_ACCOUNT = "sumanpresi86geology@gmail.com";
-  const DEFAULT_COUNTRY_CODE = "91";
 
   function freshState() {
     return {
       sendingAccount: DEFAULT_SENDING_ACCOUNT,
-      whatsappNumber: "",
-      countryCode: DEFAULT_COUNTRY_CODE,
       contacts: [
         { id: uid(), name: "Suman Das", email: "sumanpresi.geology@gmail.com", phone: "", favourite: false, groups: [] }
       ],
@@ -67,7 +64,6 @@
         if (!s.contacts) s.contacts = [];
         if (!s.groups) s.groups = [];
         if (!s.notes) s.notes = [];
-        if (!s.countryCode) s.countryCode = DEFAULT_COUNTRY_CODE;
         if (!s.sendingAccount) s.sendingAccount = DEFAULT_SENDING_ACCOUNT;
         return s;
       }
@@ -161,65 +157,6 @@
       try { return await idbGet(att.fileId); } catch (e) { return null; }
     }
     return null;
-  }
-
-  function dataURLtoFile(dataUrl, filename, mime) {
-    const arr = dataUrl.split(",");
-    const bin = atob(arr[1]);
-    let n = bin.length;
-    const u8 = new Uint8Array(n);
-    while (n--) u8[n] = bin.charCodeAt(n);
-    return new File([u8], filename, { type: mime });
-  }
-
-  // wa.me links can only pre-fill text — WhatsApp itself doesn't let a website
-  // attach a file to that link, on any platform. The device's native Share
-  // sheet is the one real way to hand a photo/file to WhatsApp directly, so
-  // this is offered as a supplementary option wherever the browser supports it.
-  function canShareAttachments() {
-    if (!navigator.share || !navigator.canShare || !pendingAttachments.length) return false;
-    try {
-      const files = pendingAttachments.map(a => new File([new Uint8Array(1)], a.name, { type: a.mime }));
-      return navigator.canShare({ files });
-    } catch (e) { return false; }
-  }
-
-  async function shareAttachmentsNative() {
-    if (!pendingAttachments.length) return;
-    const text = $("#note-text").value.trim();
-    const recipientsSnapshot = selectedRecipients;
-    const attachmentsSnapshot = pendingAttachments;
-    let files;
-    try {
-      files = attachmentsSnapshot.map(a => dataURLtoFile(a.dataUrl, a.name, a.mime));
-    } catch (e) { toast("Couldn't prepare the attachment for sharing"); return; }
-    const shareData = { files };
-    if (text) shareData.text = text;
-    if (!navigator.canShare(shareData)) { toast("Your browser can't share these files this way"); return; }
-
-    try {
-      await navigator.share(shareData);
-    } catch (e) {
-      if (e.name !== "AbortError") { console.error(e); toast("Sharing failed — try attaching manually in WhatsApp instead"); }
-      return; // cancelled or failed — nothing was shared, so no history entry
-    }
-
-    // The OS share sheet doesn't tell us which app/contact was actually
-    // chosen, so this is recorded as a best-effort "opened" against whoever
-    // was selected in Notewire — same honesty rule as the text-only link.
-    const note = {
-      id: uid(), text, timestamp: Date.now(), status: "whatsapp_opened", method: "whatsapp",
-      recipients: recipientsSnapshot.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone })),
-      waStatuses: recipientsSnapshot.map(c => ({ contactId: c.id, name: c.name, phone: c.phone, status: c.phone ? "opened" : "skipped" })),
-    };
-    note.category = categoryOf({ ...note, attachments: attachmentsSnapshot });
-    note.attachments = await persistAttachments(attachmentsSnapshot);
-    await cloudInsertNote(note);
-    state.notes.unshift(note);
-    saveState();
-    resetComposeAfterSend();
-    toast("Shared — check WhatsApp to confirm it actually sent");
-    if (activeTab === "history") renderHistory();
   }
 
   // One-time cleanup for anyone who already hit the bug: pulls any old inline
@@ -331,34 +268,13 @@
     return "file";
   }
 
-  /* ---------------- phone / WhatsApp helpers ---------------- */
+  /* ---------------- phone helper ---------------- */
 
-  // Cleans a raw phone number into E.164-ish form (+countrycode + digits),
-  // filling in the default country code only when the number has none.
-  // Normalizes a raw phone number to E.164 form (+countrycode+digits).
-  // Handles: "+91 83189 21275", "918318921275", "08318921275" (domestic
-  // trunk-prefix 0), and "0091..." (international dial-out prefix).
-  function normalizePhone(raw) {
-    if (!raw) return "";
-    const plusPrefixed = String(raw).trim().startsWith("+");
-    let digits = String(raw).replace(/\D/g, "");
-    if (plusPrefixed) return "+" + digits;
-    if (digits.startsWith("00")) return "+" + digits.slice(2);
-    const cc = state.countryCode || DEFAULT_COUNTRY_CODE;
-    // Domestic trunk-prefix zero (e.g. 08318921275) — drop the 0, add the country code.
-    if (digits.length === 11 && digits.startsWith("0")) return "+" + cc + digits.slice(1);
-    // Plain local number with no country code.
-    if (digits.length <= 10) return "+" + cc + digits;
-    // Already looks like it includes a country code.
-    return "+" + digits;
+  // Phone numbers are informational only now (no WhatsApp sending) — just
+  // tidy up stray spaces/formatting rather than forcing a specific format.
+  function cleanPhone(raw) {
+    return raw ? String(raw).trim() : "";
   }
-
-  // Single source of truth for building a WhatsApp click-to-chat URL.
-  function buildWhatsAppUrl(rawPhone, message) {
-    const number = normalizePhone(rawPhone).replace(/^\+/, "");
-    return `https://wa.me/${number}?text=${encodeURIComponent(message || "")}`;
-  }
-
 
   /* ---------------- Google sign-in (Gmail API + Google Contacts) ---------------- */
 
@@ -457,7 +373,7 @@
           if (!name) continue;
           const email = (p.emailAddresses && p.emailAddresses[0] && p.emailAddresses[0].value) || "";
           const rawPhone = (p.phoneNumbers && p.phoneNumbers[0] && p.phoneNumbers[0].value) || "";
-          const phone = rawPhone ? normalizePhone(rawPhone) : "";
+          const phone = rawPhone ? cleanPhone(rawPhone) : "";
           const photo = (p.photos && p.photos[0] && p.photos[0].url) || "";
           const resourceName = p.resourceName;
           let existing = state.contacts.find(c => c.googleResourceName === resourceName);
@@ -681,13 +597,10 @@
         error: r.error || undefined, attachments: [],
         recipients: recips.map(rr => ({ id: rr.contact_id, name: rr.name, email: rr.email, phone: rr.phone })),
       };
-      if (r.method === "whatsapp") note.waStatuses = recips.map(rr => ({ contactId: rr.contact_id, name: rr.name, phone: rr.phone, status: rr.wa_status || "skipped" }));
       return note;
     });
     if (settingsRow) {
       state.sendingAccount = settingsRow.sending_account || state.sendingAccount;
-      state.whatsappNumber = settingsRow.whatsapp_number || state.whatsappNumber;
-      state.countryCode = settingsRow.country_code || state.countryCode;
     }
     saveState();
     return true;
@@ -724,18 +637,15 @@
         }).select().single();
         if (!error && data) {
           for (const r of (n.recipients || [])) {
-            const waEntry = (n.waStatuses || []).find(s => s.contactId === r.id);
             await sb.from("note_recipients").insert({
               user_id: cloudUser.id, note_id: data.id, contact_id: null,
               name: r.name, email: r.email || null, phone: r.phone || null,
-              wa_status: waEntry ? waEntry.status : null,
             });
           }
         }
       }
       await sb.from("settings").upsert({
         user_id: cloudUser.id, sending_account: state.sendingAccount || null,
-        whatsapp_number: state.whatsappNumber || null, country_code: state.countryCode || null,
       });
       localStorage.setItem(`notewire:migrated:${cloudUser.id}`, "1");
       await loadCloudDataIntoState();
@@ -810,11 +720,9 @@
       if (error) throw error;
       note.id = data.id; // adopt the cloud-assigned id so later status updates target the right row
       for (const r of (note.recipients || [])) {
-        const waEntry = (note.waStatuses || []).find(s => s.contactId === r.id);
         await sb.from("note_recipients").insert({
           user_id: cloudUser.id, note_id: data.id, contact_id: r.id || null,
           name: r.name, email: r.email || null, phone: r.phone || null,
-          wa_status: waEntry ? waEntry.status : null,
         });
       }
     } catch (e) { console.error("Notewire cloud note insert failed", e); }
@@ -826,11 +734,7 @@
     catch (e) { console.error("Notewire cloud note status update failed", e); }
   }
 
-  async function cloudUpdateNoteRecipientStatus(noteId, contactId, status) {
-    if (!cloudUser) return;
-    try { await sb.from("note_recipients").update({ wa_status: status }).eq("note_id", noteId).eq("contact_id", contactId).eq("user_id", cloudUser.id); }
-    catch (e) { console.error("Notewire cloud recipient status update failed", e); }
-  }
+
 
   async function cloudUpdateSettings(patch) {
     if (!cloudUser) return;
@@ -880,7 +784,7 @@
   function groupMembers(groupId) { return state.contacts.filter(c => (c.groups || []).includes(groupId)); }
 
   async function addContact(name, email, phone) {
-    const c = { id: uid(), name, email: email || "", phone: phone ? normalizePhone(phone) : "", favourite: false, groups: [] };
+    const c = { id: uid(), name, email: email || "", phone: phone ? cleanPhone(phone) : "", favourite: false, groups: [] };
     if (cloudUser) {
       try { const row = await cloudInsertContact(c); if (row) c.id = row.id; }
       catch (e) { console.error(e); toast("Saved locally — cloud sync failed"); }
@@ -1110,8 +1014,7 @@
           <div class="sub">${[c.email, c.phone].filter(Boolean).map(escapeHtml).join(" · ") || "No email or phone"}</div>
         </div>
         <div class="badges">
-          <span class="badge ${c.email ? "" : "off"}" title="Email">✉</span>
-          <span class="badge ${c.phone ? "" : "off"}" title="WhatsApp">WA</span>
+          <span class="badge ${c.email ? "" : "off"}" title="Has email">✉</span>
         </div>
         <input type="checkbox" class="select-check" ${selected ? "checked" : ""} style="display:${pickerMulti ? "inline-block" : "none"}">
       `;
@@ -1154,8 +1057,6 @@
   let mediaRecorder = null;
   let recordedChunks = [];
   let selectedRecipients = []; // array of contact objects
-  let sendMethod = null; // 'email' | 'whatsapp'
-  let currentWaNote = null; // the in-progress multi-contact WhatsApp note, while the person clicks through it
 
   function renderSelectedRecipients() {
     const wrap = $("#selected-recipients");
@@ -1175,29 +1076,7 @@
 
   function onRecipientsChanged() {
     renderSelectedRecipients();
-    const methodRow = $("#method-row");
-    if (!selectedRecipients.length) {
-      methodRow.style.display = "none";
-      sendMethod = null;
-    } else {
-      methodRow.style.display = "flex";
-      const anyEmail = selectedRecipients.some(c => c.email);
-      const anyPhone = selectedRecipients.some(c => c.phone);
-      $("#method-email").disabled = !anyEmail;
-      $("#method-whatsapp").disabled = !anyPhone;
-      if (sendMethod === "email" && !anyEmail) sendMethod = null;
-      if (sendMethod === "whatsapp" && !anyPhone) sendMethod = null;
-      if (!sendMethod) sendMethod = anyEmail ? "email" : (anyPhone ? "whatsapp" : null);
-    }
-    currentWaNote = null;
-    renderWaStatusList();
-    renderMethodButtons();
     updateSendState();
-  }
-
-  function renderMethodButtons() {
-    $$(".method-btn").forEach(b => b.classList.toggle("active", b.dataset.method === sendMethod));
-    $("#email-fields").style.display = sendMethod === "email" ? "flex" : "none";
   }
 
   function renderAttachmentTray() {
@@ -1219,98 +1098,20 @@
     });
   }
 
-  function renderWaStatusList() {
-    const wrap = $("#wa-status-list");
-    if (!currentWaNote) { wrap.innerHTML = ""; return; }
-    wrap.innerHTML = "";
-    currentWaNote.waStatuses.forEach(r => {
-      const row = document.createElement("div");
-      row.className = `wa-status-row wa-${r.status}`;
-      const canOpen = r.status === "ready";
-      row.innerHTML = `
-        <span>${escapeHtml(r.name)}</span>
-        <span style="display:flex;align-items:center;gap:10px">
-          <span class="wa-status-badge">${waStatusLabel(r.status)}</span>
-          ${canOpen ? `<a class="wa-open-btn" href="${buildWhatsAppUrl(r.phone, currentWaNote.text)}" target="_blank" rel="noopener noreferrer">Open WhatsApp</a>` : ""}
-        </span>
-      `;
-      if (canOpen) {
-        // A real <a href> click — genuine navigation, never a JS pop-up.
-        // The state update is deferred a tick so the browser uses this
-        // exact href before we re-render (and possibly remove) this element.
-        row.querySelector(".wa-open-btn").addEventListener("click", () => {
-          setTimeout(() => {
-            const noteRef = currentWaNote;
-            r.status = "opened";
-            saveState();
-            renderWaStatusList();
-            checkWaNoteComplete();
-            if (noteRef) cloudUpdateNoteRecipientStatus(noteRef.id, r.contactId, "opened");
-          }, 0);
-        });
-      }
-      wrap.appendChild(row);
-    });
-  }
-
-  function checkWaNoteComplete() {
-    if (!currentWaNote) return;
-    const stillReady = currentWaNote.waStatuses.some(s => s.status === "ready");
-    if (!stillReady) {
-      finalizeWaNote(currentWaNote);
-      currentWaNote = null;
-      renderWaStatusList();
-    }
-  }
-
-  function waStatusLabel(status) {
-    return { ready: "Ready", opened: "WhatsApp opened", skipped: "No phone number" }[status] || status;
-  }
-
   function updateSendState() {
     const hasText = $("#note-text").value.trim().length > 0;
     const btn = $("#send-btn");
-    const link = $("#send-link-wa");
-    const shareBtn = $("#share-attachment-btn");
     const ready = hasText || pendingAttachments.length;
-
-    // Default: button visible, anchor hidden — restored below only for the
-    // single-WhatsApp-recipient case.
-    btn.style.display = "flex";
-    link.style.display = "none";
-    shareBtn.style.display = "none";
 
     if (!selectedRecipients.length) {
       btn.disabled = true; btn.textContent = "Select a contact"; return;
     }
-    if (!sendMethod) {
-      btn.disabled = true; btn.textContent = "No valid sending method for this contact"; return;
+    const anyEmail = selectedRecipients.some(c => c.email);
+    if (!anyEmail) {
+      btn.disabled = true; btn.textContent = "None of the selected contacts have an email"; return;
     }
-
-    if (sendMethod === "email") {
-      btn.disabled = !ready;
-      btn.textContent = "Send Email";
-      return;
-    }
-
-    // WhatsApp — the wa.me link can only pre-fill text, never a file (that's
-    // WhatsApp's own restriction). Where the device's Share sheet supports
-    // handing files to apps directly, offer that as well.
-    if (canShareAttachments()) shareBtn.style.display = "block";
-
-    const waTargets = selectedRecipients.filter(c => c.phone);
-    if (waTargets.length === 1) {
-      // A real <a href> — genuine browser navigation, not a JS popup, so it
-      // can never be blocked as a pop-up.
-      btn.style.display = "none";
-      link.style.display = "flex";
-      link.href = buildWhatsAppUrl(waTargets[0].phone, $("#note-text").value);
-      link.classList.toggle("link-disabled", !ready);
-      link.textContent = "Open WhatsApp";
-    } else {
-      btn.disabled = !ready;
-      btn.textContent = `Open WhatsApp for ${waTargets.length} contact${waTargets.length === 1 ? "" : "s"}`;
-    }
+    btn.disabled = !ready;
+    btn.textContent = "Send Email";
   }
 
   const MAX_FILE_BYTES = 8 * 1024 * 1024; // 8MB — keeps notes within local storage limits
@@ -1375,11 +1176,9 @@
 
   async function sendNote() {
     const text = $("#note-text").value.trim();
-    if (!selectedRecipients.length || !sendMethod) return;
+    if (!selectedRecipients.length) return;
     if (!text && !pendingAttachments.length) return;
-
-    if (sendMethod === "email") await sendEmail(text);
-    else await sendWhatsApp(text);
+    await sendEmail(text);
   }
 
   function openGmailComposeFallback(toContacts, cc, bcc, subject, body) {
@@ -1474,112 +1273,13 @@
     renderHistory();
   }
 
-  async function sendWhatsApp(text) {
-    // Only reached via the #send-btn button, which is only shown when there's
-    // more than one WhatsApp-capable recipient (a single recipient uses the
-    // real <a href> anchor instead — see handleWhatsAppSingleClick).
-    const targets = selectedRecipients.filter(c => c.phone);
-    if (!targets.length) { toast("None of the selected contacts have a phone number"); return; }
-
-    const note = {
-      id: uid(),
-      text,
-      timestamp: Date.now(),
-      status: "pending",
-      method: "whatsapp",
-      recipients: selectedRecipients.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone })),
-      waStatuses: selectedRecipients.map(c => ({
-        contactId: c.id, name: c.name, phone: c.phone,
-        status: c.phone ? "ready" : "skipped",
-      })),
-    };
-    note.category = categoryOf({ ...note, attachments: pendingAttachments });
-
-    if (pendingAttachments.length) {
-      toast(`Note: attachments aren't sent through the WhatsApp link — ${pendingAttachments.length > 1 ? "attach them" : "attach it"} manually in WhatsApp after it opens.`);
-    }
-    note.attachments = await persistAttachments(pendingAttachments);
-    await cloudInsertNote(note); // adopts the cloud-assigned id when signed in
-
-    state.notes.unshift(note);
-    saveState();
-    resetComposeAfterSend();
-
-    // Several recipients: each gets its own real "Open WhatsApp" link, clicked
-    // one at a time — never opened automatically.
-    currentWaNote = note;
-    renderWaStatusList();
-    toast(`${targets.length} contacts ready — click "Open WhatsApp" beside each one`);
-
-    if (activeTab === "history") renderHistory();
-  }
-
-  function handleWhatsAppSingleClick() {
-    const waTargets = selectedRecipients.filter(c => c.phone);
-    if (waTargets.length !== 1) return;
-    const text = $("#note-text").value.trim();
-    if (!text && !pendingAttachments.length) return;
-    const target = waTargets[0];
-    const attachmentsSnapshot = pendingAttachments;
-    const recipientsSnapshot = selectedRecipients;
-
-    // Defer the note-save / form-reset by one tick: the browser reads this
-    // anchor's href to navigate right after this click handler returns, so we
-    // must not mutate anything on the page until that's already happened.
-    setTimeout(async () => {
-      const note = {
-        id: uid(),
-        text,
-        timestamp: Date.now(),
-        status: "whatsapp_opened",
-        method: "whatsapp",
-        recipients: recipientsSnapshot.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone })),
-        waStatuses: recipientsSnapshot.map(c => ({
-          contactId: c.id, name: c.name, phone: c.phone,
-          status: c.id === target.id ? "opened" : (c.phone ? "ready" : "skipped"),
-        })),
-      };
-      note.category = categoryOf({ ...note, attachments: attachmentsSnapshot });
-      if (attachmentsSnapshot.length) {
-        toast(`Note: attachments aren't sent through the WhatsApp link — attach ${attachmentsSnapshot.length > 1 ? "them" : "it"} manually in WhatsApp after it opens.`);
-      }
-      note.attachments = await persistAttachments(attachmentsSnapshot);
-      await cloudInsertNote(note); // adopts the cloud-assigned id when signed in
-      state.notes.unshift(note);
-      saveState();
-      resetComposeAfterSend();
-      if (activeTab === "history") renderHistory();
-    }, 0);
-  }
-
-  function finalizeWaNote(note) {
-    // Reachable only once every recipient with a phone number has had "Open
-    // WhatsApp" clicked — there's no "blocked" state anymore since real <a>
-    // navigation is never treated as a pop-up.
-    note.status = "whatsapp_opened";
-    saveState();
-    cloudUpdateNoteStatus(note);
-    if (activeTab === "history") renderHistory();
-  }
-
   function retrySend(id) {
     const n = state.notes.find(n => n.id === id);
     if (!n) return;
-    if (n.method === "whatsapp") {
-      // Jump to Compose and re-show the list so the person can click "Open
-      // WhatsApp" for whichever contacts are still pending.
-      n.status = "pending";
-      currentWaNote = n;
-      saveState();
-      setTab("compose");
-      renderWaStatusList();
-      toast('Click "Open WhatsApp" beside each remaining contact');
-    } else {
-      const toContacts = n.recipients.filter(r => r.email);
-      n.status = "pending";
-      renderHistory();
-      deliverEmailNote(n, toContacts, n.recipients.length - toContacts.length);
-    }
+    const toContacts = n.recipients.filter(r => r.email);
+    n.status = "pending";
+    renderHistory();
+    deliverEmailNote(n, toContacts, n.recipients.length - toContacts.length);
   }
 
   /* ---------------- history ---------------- */
@@ -1587,8 +1287,6 @@
   let activeFilter = "all";
   const FILTERS = [
     { id: "all", label: "All" },
-    { id: "email", label: "Email" },
-    { id: "whatsapp", label: "WhatsApp" },
     { id: "images", label: "Images" },
     { id: "audio", label: "Audio" },
     { id: "files", label: "Files" },
@@ -1614,18 +1312,9 @@
 
   function noteStatusText(note) {
     const names = (note.recipients || []).map(r => r.name).join(", ") || "recipient";
-    if (note.method === "whatsapp" && note.status === "pending") {
-      const opened = (note.waStatuses || []).filter(s => s.status === "opened").length;
-      const total = (note.waStatuses || []).filter(s => s.status !== "skipped").length;
-      return `${opened} of ${total} opened — tap Retry to continue · ${timeAgo(note.timestamp)}`;
-    }
     if (note.status === "pending") return `<span class="status-pending">Sending to ${escapeHtml(names)}…</span>`;
     if (note.status === "sent") return `Email sent to ${escapeHtml(names)} · ${timeAgo(note.timestamp)}`;
     if (note.status === "gmail_opened") return `Gmail opened for ${escapeHtml(names)} · ${timeAgo(note.timestamp)}`;
-    if (note.status === "whatsapp_opened") {
-      if (note.recipients.length > 1) return `WhatsApp opened for all ${note.recipients.length} contacts · ${timeAgo(note.timestamp)}`;
-      return `WhatsApp opened for ${escapeHtml(names)} · ${timeAgo(note.timestamp)}`;
-    }
     if (note.status === "failed") return `Failed${note.error ? ": " + escapeHtml(note.error) : ""} · ${timeAgo(note.timestamp)}`;
     return `${escapeHtml(names)} · ${timeAgo(note.timestamp)}`;
   }
@@ -1635,13 +1324,12 @@
     row.className = "note-row";
     const iconHTML = iconFor(note.category);
     const hasImageAttachment = note.category === "images" && note.attachments && note.attachments[0];
-    const methodTag = note.method === "whatsapp" ? "WhatsApp" : "Email";
     const needsRetry = note.status === "pending" || note.status === "failed";
-    const offerGmailFallback = note.method === "email" && note.status === "failed";
+    const offerGmailFallback = note.status === "failed";
     row.innerHTML = `
       <div class="icon">${iconHTML}</div>
       <div class="body">
-        <div class="title">${escapeHtml(methodTag)} · ${escapeHtml(noteTitle(note))}</div>
+        <div class="title">${escapeHtml(noteTitle(note))}</div>
         <div class="meta">${noteStatusText(note)}</div>
       </div>
       <div style="display:flex;gap:6px">
@@ -1667,8 +1355,7 @@
     const scroll = $("#history-scroll");
     scroll.innerHTML = "";
     let notes = state.notes;
-    if (activeFilter === "email" || activeFilter === "whatsapp") notes = notes.filter(n => n.method === activeFilter);
-    else if (activeFilter !== "all") notes = notes.filter(n => n.category === activeFilter);
+    if (activeFilter !== "all") notes = notes.filter(n => n.category === activeFilter);
 
     if (!notes.length) {
       scroll.innerHTML = `<div class="empty-state"><div class="glyph">✎</div><p>Nothing here yet — messages you send will show up in this list.</p></div>`;
@@ -1729,8 +1416,6 @@
   function renderSettings() {
     renderStreak();
     $("#sending-account-input").value = state.sendingAccount || "";
-    $("#whatsapp-number-input").value = state.whatsappNumber || "";
-    $("#country-code-input").value = state.countryCode || DEFAULT_COUNTRY_CODE;
     renderContactManageList();
     renderGroupManageList();
 
@@ -1741,15 +1426,6 @@
     $("#contacts-status-sub").textContent = contactsAccessToken ? "Connected" : "Not connected";
     $("#connect-contacts-btn").textContent = contactsAccessToken ? "Re-import contacts" : "Connect Google Contacts";
     $("#disconnect-contacts-btn").style.display = contactsAccessToken ? "inline-flex" : "none";
-
-    const testLink = $("#test-wa-btn");
-    if (state.whatsappNumber) {
-      testLink.href = buildWhatsAppUrl(state.whatsappNumber, "Test message from Notewire ✅");
-      testLink.classList.remove("link-disabled");
-    } else {
-      testLink.removeAttribute("href");
-      testLink.classList.add("link-disabled");
-    }
   }
 
   function saveSendingAccount() {
@@ -1760,27 +1436,6 @@
     saveState();
     cloudUpdateSettings({ sending_account: email });
     toast("Sending account saved");
-  }
-
-  function saveWhatsappNumber() {
-    const raw = $("#whatsapp-number-input").value.trim();
-    state.whatsappNumber = raw ? normalizePhone(raw) : "";
-    saveState();
-    cloudUpdateSettings({ whatsapp_number: state.whatsappNumber });
-    toast("WhatsApp number saved");
-  }
-
-  function saveCountryCode() {
-    const cc = $("#country-code-input").value.trim().replace(/\D/g, "");
-    state.countryCode = cc || DEFAULT_COUNTRY_CODE;
-    saveState();
-    cloudUpdateSettings({ country_code: state.countryCode });
-  }
-
-  function testWhatsApp() {
-    // No-op click handler kept only for the toast when nothing is configured yet
-    // — actual navigation happens via the anchor's own href (set in renderSettings).
-    if (!state.whatsappNumber) { toast("Add your WhatsApp number above first"); }
   }
 
   async function addContactFromSettings() {
@@ -1847,8 +1502,6 @@
 
     $("#note-text").addEventListener("input", updateSendState);
     $("#send-btn").addEventListener("click", sendNote);
-    $("#send-link-wa").addEventListener("click", handleWhatsAppSingleClick);
-    $("#share-attachment-btn").addEventListener("click", shareAttachmentsNative);
 
     $("#tool-camera").addEventListener("click", () => $("#file-camera").click());
     $("#file-camera").addEventListener("change", (e) => addFiles(e.target.files, "image").then(() => e.target.value = ""));
@@ -1879,10 +1532,6 @@
     });
     $("#confirm-select-btn").addEventListener("click", confirmContactSelection);
 
-    // Method toggle
-    $("#method-email").addEventListener("click", () => { if (!$("#method-email").disabled) { sendMethod = "email"; renderMethodButtons(); updateSendState(); } });
-    $("#method-whatsapp").addEventListener("click", () => { if (!$("#method-whatsapp").disabled) { sendMethod = "whatsapp"; renderMethodButtons(); updateSendState(); } });
-
     // Settings
     $("#save-supabase-config-btn").addEventListener("click", saveSupabaseConfigFromInputs);
     $("#cloud-signin-btn").addEventListener("click", signInWithGoogleCloud);
@@ -1895,9 +1544,6 @@
     $("#disconnect-gmail-btn").addEventListener("click", disconnectGmail);
     $("#connect-contacts-btn").addEventListener("click", connectContacts);
     $("#disconnect-contacts-btn").addEventListener("click", disconnectContacts);
-    $("#save-whatsapp-number-btn").addEventListener("click", saveWhatsappNumber);
-    $("#country-code-input").addEventListener("change", saveCountryCode);
-    $("#test-wa-btn").addEventListener("click", testWhatsApp);
     $("#clear-history-btn").addEventListener("click", clearHistory);
     $("#install-go").addEventListener("click", doInstall);
     $("#install-settings-btn").addEventListener("click", doInstall);
