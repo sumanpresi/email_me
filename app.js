@@ -199,14 +199,28 @@
     return s;
   }
 
+  // A single reused window name — opening several chats reuses the SAME tab
+  // instead of spawning one new tab per contact.
+  const WA_WINDOW_NAME = "notewire_whatsapp";
+
+  function isMobileDevice() {
+    return /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
+  }
+
   function waLink(rawPhone, message) {
     const e164 = normalizePhone(rawPhone);
     const number = e164.replace(/^\+/, "");
-    return `https://wa.me/${number}?text=${encodeURIComponent(message || "")}`;
+    const text = encodeURIComponent(message || "");
+    // On phones, wa.me correctly hands off to the WhatsApp app. On desktop/laptop,
+    // going straight to web.whatsapp.com skips the "Open app / Continue to
+    // WhatsApp Web" interstitial that wa.me shows in a fresh browser tab.
+    return isMobileDevice()
+      ? `https://wa.me/${number}?text=${text}`
+      : `https://web.whatsapp.com/send?phone=${number}&text=${text}&app_absent=0`;
   }
 
   function openWhatsApp(rawPhone, message) {
-    const win = window.open(waLink(rawPhone, message), "_blank", "noopener");
+    const win = window.open(waLink(rawPhone, message), WA_WINDOW_NAME, "noopener");
     // A null return, or a window that is immediately closed, usually means a popup blocker stepped in.
     if (!win) return "blocked";
     return "opened";
@@ -619,10 +633,11 @@
     let contacts = state.contacts;
     if (pickerTab === "fav") contacts = contacts.filter(c => c.favourite);
     if (q) {
+      const qDigits = q.replace(/\D/g, "");
       contacts = contacts.filter(c =>
         c.name.toLowerCase().includes(q) ||
         (c.email || "").toLowerCase().includes(q) ||
-        (c.phone || "").replace(/\D/g, "").includes(q.replace(/\D/g, ""))
+        (qDigits.length > 0 && (c.phone || "").replace(/\D/g, "").includes(qDigits))
       );
     }
     contacts = [...contacts].sort((a, b) => a.name.localeCompare(b.name));
@@ -688,7 +703,7 @@
   let recordedChunks = [];
   let selectedRecipients = []; // array of contact objects
   let sendMethod = null; // 'email' | 'whatsapp'
-  let waResults = []; // { contactId, name, status } for the current compose
+  let currentWaNote = null; // the in-progress multi-contact WhatsApp note, while the person clicks through it
 
   function renderSelectedRecipients() {
     const wrap = $("#selected-recipients");
@@ -722,7 +737,7 @@
       if (sendMethod === "whatsapp" && !anyPhone) sendMethod = null;
       if (!sendMethod) sendMethod = anyEmail ? "email" : (anyPhone ? "whatsapp" : null);
     }
-    waResults = [];
+    currentWaNote = null;
     renderWaStatusList();
     renderMethodButtons();
     updateSendState();
@@ -754,13 +769,39 @@
 
   function renderWaStatusList() {
     const wrap = $("#wa-status-list");
-    if (!waResults.length) { wrap.innerHTML = ""; return; }
-    wrap.innerHTML = waResults.map(r => `
-      <div class="wa-status-row wa-${r.status}">
+    if (!currentWaNote) { wrap.innerHTML = ""; return; }
+    wrap.innerHTML = "";
+    currentWaNote.waStatuses.forEach(r => {
+      const row = document.createElement("div");
+      row.className = `wa-status-row wa-${r.status}`;
+      const canOpen = r.status === "ready" || r.status === "blocked";
+      row.innerHTML = `
         <span>${escapeHtml(r.name)}</span>
-        <span class="wa-status-badge">${waStatusLabel(r.status)}</span>
-      </div>
-    `).join("");
+        <span style="display:flex;align-items:center;gap:10px">
+          <span class="wa-status-badge">${waStatusLabel(r.status)}</span>
+          ${canOpen ? `<button class="wa-open-btn">Open</button>` : ""}
+        </span>
+      `;
+      if (canOpen) {
+        row.querySelector(".wa-open-btn").addEventListener("click", () => {
+          r.status = openWhatsApp(r.phone, currentWaNote.text);
+          saveState();
+          renderWaStatusList();
+          checkWaNoteComplete();
+        });
+      }
+      wrap.appendChild(row);
+    });
+  }
+
+  function checkWaNoteComplete() {
+    if (!currentWaNote) return;
+    const stillReady = currentWaNote.waStatuses.some(s => s.status === "ready" || s.status === "blocked");
+    if (!stillReady) {
+      finalizeWaNote(currentWaNote);
+      currentWaNote = null;
+      renderWaStatusList();
+    }
   }
 
   function waStatusLabel(status) {
@@ -950,7 +991,10 @@
       status: "pending",
       method: "whatsapp",
       recipients: selectedRecipients.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone })),
-      waStatuses: [],
+      waStatuses: selectedRecipients.map(c => ({
+        contactId: c.id, name: c.name, phone: c.phone,
+        status: c.phone ? "ready" : "skipped",
+      })),
     };
     note.category = categoryOf(note);
 
@@ -958,26 +1002,23 @@
       toast(`Note: attachments aren't sent through the WhatsApp link — ${pendingAttachments.length > 1 ? "attach them" : "attach it"} manually in WhatsApp after it opens.`);
     }
 
-    waResults = skipped.map(c => ({ contactId: c.id, name: c.name, status: "skipped" }));
-
-    targets.forEach((c, i) => {
-      // Stagger window.open calls slightly — opening many tabs in the same tick is what most
-      // often triggers a browser's popup blocker.
-      setTimeout(() => {
-        const result = openWhatsApp(c.phone, text);
-        const entry = { contactId: c.id, name: c.name, status: result };
-        waResults.push(entry);
-        note.waStatuses.push(entry);
-        renderWaStatusList();
-        if (waResults.length === selectedRecipients.length) finalizeWaNote(note);
-      }, i * 500);
-    });
-
-    if (!targets.length) finalizeWaNote(note);
-
     state.notes.unshift(note);
     saveState();
     resetComposeAfterSend();
+
+    if (targets.length === 1) {
+      // A single recipient is safe to open immediately — no tab flood risk.
+      const entry = note.waStatuses.find(s => s.contactId === targets[0].id);
+      entry.status = openWhatsApp(targets[0].phone, text);
+      finalizeWaNote(note);
+    } else {
+      // Several recipients: open them one at a time, reusing a single WhatsApp
+      // tab, instead of spawning a tab per contact.
+      currentWaNote = note;
+      renderWaStatusList();
+      toast(`${targets.length} contacts ready — click "Open" beside each one (same WhatsApp tab each time)`);
+    }
+    if (activeTab === "history") renderHistory();
   }
 
   function finalizeWaNote(note) {
@@ -995,18 +1036,15 @@
     const n = state.notes.find(n => n.id === id);
     if (!n) return;
     if (n.method === "whatsapp") {
-      const targets = n.recipients.filter(r => r.phone);
-      const results = [];
-      targets.forEach((r, i) => {
-        setTimeout(() => {
-          const status = openWhatsApp(r.phone, n.text);
-          results.push({ contactId: r.id, name: r.name, status });
-          if (results.length === targets.length) {
-            n.waStatuses = results;
-            finalizeWaNote(n);
-          }
-        }, i * 500);
-      });
+      // Re-open only the contacts that haven't been reached yet, one at a time,
+      // reusing a single WhatsApp tab — jump to Compose to click through them.
+      n.waStatuses.forEach(s => { if (s.status !== "opened" && s.status !== "skipped") s.status = "ready"; });
+      n.status = "pending";
+      currentWaNote = n;
+      saveState();
+      setTab("compose");
+      renderWaStatusList();
+      toast('Click "Open" beside each remaining contact');
     } else {
       const toContacts = n.recipients.filter(r => r.email);
       n.status = "pending";

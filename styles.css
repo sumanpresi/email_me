@@ -879,3 +879,13 @@ button {
   white-space: nowrap;
 }
 .connect-btn:disabled { opacity: 0.5; }
+
+.wa-open-btn {
+  background: var(--accent);
+  color: #17140d;
+  font-weight: 700;
+  padding: 6px 14px;
+  border-radius: var(--radius-s);
+  font-size: 0.78rem;
+  min-height: 32px;
+}
