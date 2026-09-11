@@ -199,10 +199,6 @@
     return s;
   }
 
-  // A single reused window name — opening several chats reuses the SAME tab
-  // instead of spawning one new tab per contact.
-  const WA_WINDOW_NAME = "notewire_whatsapp";
-
   function isMobileDevice() {
     return /Mobi|Android|iPhone|iPad/i.test(navigator.userAgent);
   }
@@ -220,12 +216,12 @@
   }
 
   function openWhatsApp(rawPhone, message) {
-    // Deliberately no "noopener" here: that flag stops Chrome from reusing a
-    // window by name, which is exactly the reuse behaviour we want for multi-contact sends.
-    const win = window.open(waLink(rawPhone, message), WA_WINDOW_NAME);
+    // Plain "_blank" — named-window reuse turned out to trigger popup blocking
+    // more often than it saved tabs. Once pop-ups are allowed for this site,
+    // this is the most reliable option; you can close each tab after sending.
+    const win = window.open(waLink(rawPhone, message), "_blank");
     // A null return usually means a popup blocker stepped in.
     if (!win) return "blocked";
-    try { win.focus(); } catch (e) { /* cross-origin focus can throw in some browsers — harmless */ }
     return "opened";
   }
 
