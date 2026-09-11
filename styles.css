@@ -905,3 +905,15 @@ button {
   opacity: 0.4;
   pointer-events: none;
 }
+
+.share-attachment-btn {
+  background: var(--accent-wash);
+  color: var(--accent-light);
+  border: 1px dashed var(--accent);
+  padding: 10px 14px;
+  border-radius: var(--radius-s);
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-align: left;
+  margin-top: 4px;
+}

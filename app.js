@@ -163,6 +163,65 @@
     return null;
   }
 
+  function dataURLtoFile(dataUrl, filename, mime) {
+    const arr = dataUrl.split(",");
+    const bin = atob(arr[1]);
+    let n = bin.length;
+    const u8 = new Uint8Array(n);
+    while (n--) u8[n] = bin.charCodeAt(n);
+    return new File([u8], filename, { type: mime });
+  }
+
+  // wa.me links can only pre-fill text — WhatsApp itself doesn't let a website
+  // attach a file to that link, on any platform. The device's native Share
+  // sheet is the one real way to hand a photo/file to WhatsApp directly, so
+  // this is offered as a supplementary option wherever the browser supports it.
+  function canShareAttachments() {
+    if (!navigator.share || !navigator.canShare || !pendingAttachments.length) return false;
+    try {
+      const files = pendingAttachments.map(a => new File([new Uint8Array(1)], a.name, { type: a.mime }));
+      return navigator.canShare({ files });
+    } catch (e) { return false; }
+  }
+
+  async function shareAttachmentsNative() {
+    if (!pendingAttachments.length) return;
+    const text = $("#note-text").value.trim();
+    const recipientsSnapshot = selectedRecipients;
+    const attachmentsSnapshot = pendingAttachments;
+    let files;
+    try {
+      files = attachmentsSnapshot.map(a => dataURLtoFile(a.dataUrl, a.name, a.mime));
+    } catch (e) { toast("Couldn't prepare the attachment for sharing"); return; }
+    const shareData = { files };
+    if (text) shareData.text = text;
+    if (!navigator.canShare(shareData)) { toast("Your browser can't share these files this way"); return; }
+
+    try {
+      await navigator.share(shareData);
+    } catch (e) {
+      if (e.name !== "AbortError") { console.error(e); toast("Sharing failed — try attaching manually in WhatsApp instead"); }
+      return; // cancelled or failed — nothing was shared, so no history entry
+    }
+
+    // The OS share sheet doesn't tell us which app/contact was actually
+    // chosen, so this is recorded as a best-effort "opened" against whoever
+    // was selected in Notewire — same honesty rule as the text-only link.
+    const note = {
+      id: uid(), text, timestamp: Date.now(), status: "whatsapp_opened", method: "whatsapp",
+      recipients: recipientsSnapshot.map(c => ({ id: c.id, name: c.name, email: c.email, phone: c.phone })),
+      waStatuses: recipientsSnapshot.map(c => ({ contactId: c.id, name: c.name, phone: c.phone, status: c.phone ? "opened" : "skipped" })),
+    };
+    note.category = categoryOf({ ...note, attachments: attachmentsSnapshot });
+    note.attachments = await persistAttachments(attachmentsSnapshot);
+    await cloudInsertNote(note);
+    state.notes.unshift(note);
+    saveState();
+    resetComposeAfterSend();
+    toast("Shared — check WhatsApp to confirm it actually sent");
+    if (activeTab === "history") renderHistory();
+  }
+
   // One-time cleanup for anyone who already hit the bug: pulls any old inline
   // dataUrls out of already-saved notes and into IndexedDB, shrinking the
   // localStorage blob back down so future saves (new groups, contacts) stop
@@ -1212,12 +1271,14 @@
     const hasText = $("#note-text").value.trim().length > 0;
     const btn = $("#send-btn");
     const link = $("#send-link-wa");
+    const shareBtn = $("#share-attachment-btn");
     const ready = hasText || pendingAttachments.length;
 
     // Default: button visible, anchor hidden — restored below only for the
     // single-WhatsApp-recipient case.
     btn.style.display = "flex";
     link.style.display = "none";
+    shareBtn.style.display = "none";
 
     if (!selectedRecipients.length) {
       btn.disabled = true; btn.textContent = "Select a contact"; return;
@@ -1232,7 +1293,11 @@
       return;
     }
 
-    // WhatsApp
+    // WhatsApp — the wa.me link can only pre-fill text, never a file (that's
+    // WhatsApp's own restriction). Where the device's Share sheet supports
+    // handing files to apps directly, offer that as well.
+    if (canShareAttachments()) shareBtn.style.display = "block";
+
     const waTargets = selectedRecipients.filter(c => c.phone);
     if (waTargets.length === 1) {
       // A real <a href> — genuine browser navigation, not a JS popup, so it
@@ -1783,6 +1848,7 @@
     $("#note-text").addEventListener("input", updateSendState);
     $("#send-btn").addEventListener("click", sendNote);
     $("#send-link-wa").addEventListener("click", handleWhatsAppSingleClick);
+    $("#share-attachment-btn").addEventListener("click", shareAttachmentsNative);
 
     $("#tool-camera").addEventListener("click", () => $("#file-camera").click());
     $("#file-camera").addEventListener("change", (e) => addFiles(e.target.files, "image").then(() => e.target.value = ""));
