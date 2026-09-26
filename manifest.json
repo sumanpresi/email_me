@@ -1,6 +1,6 @@
 {
-  "name": "Notewire — Quick Send",
-  "short_name": "Notewire",
+  "name": "Email Me — Quick Send",
+  "short_name": "Email Me",
   "description": "Capture a thought, a photo, or a file and send it to yourself in one tap.",
   "start_url": "./index.html",
   "scope": "./",

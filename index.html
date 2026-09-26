@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Notewire — Email</title>
+<title>Email Me</title>
 <meta name="description" content="Write a message, pick a contact, send it by Gmail.">
 <meta name="theme-color" content="#121317">
 <link rel="manifest" href="manifest.json">
@@ -11,7 +11,7 @@
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Notewire">
+<meta name="apple-mobile-web-app-title" content="Email Me">
 <link rel="stylesheet" href="styles.css">
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -20,13 +20,13 @@
 <div id="app">
 
   <div class="topbar">
-    <h1>Notewire</h1>
+    <h1>Email Me</h1>
     <button class="icon-btn" data-tab="settings" id="topbar-settings"></button>
   </div>
 
   <div class="shell">
     <nav class="rail">
-      <div class="brand"><div class="mark"></div><span>Notewire</span></div>
+      <div class="brand"><div class="mark"></div><span>Email Me</span></div>
       <button class="rail-item" data-tab="compose"></button>
       <button class="rail-item" data-tab="history"></button>
       <button class="rail-item" data-tab="settings"></button>
@@ -92,7 +92,7 @@
         <div class="settings-scroll">
 
           <div class="install-banner" id="install-banner">
-            <div class="txt"><b>Install Notewire</b>Add it to your home screen or taskbar for one-tap access.</div>
+            <div class="txt"><b>Install Email Me</b>Add it to your home screen or taskbar for one-tap access.</div>
             <button class="install-go" id="install-go">Install</button>
           </div>
 
@@ -126,7 +126,7 @@
                 <div class="txt"><b>Local data found</b>Upload your existing contacts, groups and history to your cloud account?</div>
                 <button class="install-go" id="cloud-migrate-btn">Upload &amp; sync</button>
               </div>
-              <div class="settings-note" id="cloud-sync-status">Not connected — Notewire is running in local-only mode on this device.</div>
+              <div class="settings-note" id="cloud-sync-status">Not connected — Email Me is running in local-only mode on this device.</div>
             </div>
           </div>
 
@@ -216,7 +216,7 @@
               <div class="settings-item">
                 <div>
                   <div class="label">Install app</div>
-                  <div class="sub">Use Notewire like a native app</div>
+                  <div class="sub">Use Email Me like a native app</div>
                 </div>
                 <button class="remove" id="install-settings-btn" style="color:var(--accent-light)">Install</button>
               </div>

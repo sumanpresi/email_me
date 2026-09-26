@@ -529,7 +529,7 @@
     await sb.auth.signOut();
     cloudUser = null;
     updateCloudAuthUI();
-    setCloudStatus("Signed out — Notewire is running in local-only mode on this device.");
+    setCloudStatus("Signed out — Email Me is running in local-only mode on this device.");
     $("#cloud-migrate-banner").style.display = "none";
   }
 
@@ -556,12 +556,13 @@
       setCloudStatus("Sync error — see browser console for details. Local data is safe.");
     }
     renderSettings();
+    applyDefaultRecipientIfNeeded();
     onRecipientsChanged();
     if (activeTab === "history") renderHistory();
   }
 
   function handleSignedOut() {
-    setCloudStatus("Signed out — Notewire is running in local-only mode on this device.");
+    setCloudStatus("Signed out — Email Me is running in local-only mode on this device.");
   }
 
   // Fetches everything from Supabase and replaces local state with it (cloud
@@ -1045,6 +1046,7 @@
 
   function confirmContactSelection() {
     selectedRecipients = pickerSelection.map(contactById).filter(Boolean);
+    recipientsAutoApplied = false;
     closeContactPicker();
     onRecipientsChanged();
   }
@@ -1057,6 +1059,21 @@
   let mediaRecorder = null;
   let recordedChunks = [];
   let selectedRecipients = []; // array of contact objects
+  let recipientsAutoApplied = false; // true while the current selection is our default, not a manual pick
+  const DEFAULT_RECIPIENT_EMAIL = "sumanpresi.geology@gmail.com";
+
+  // Pre-fills the To field with the default contact so a new message opens
+  // ready to send. Runs at startup and again once cloud contacts arrive
+  // (their ids differ from the local placeholder) — but only while nothing
+  // has been manually picked yet, so it never overrides a real selection.
+  function applyDefaultRecipientIfNeeded() {
+    if (selectedRecipients.length && !recipientsAutoApplied) return;
+    const def = state.contacts.find(c => c.email === DEFAULT_RECIPIENT_EMAIL) || state.contacts[0];
+    if (def) {
+      selectedRecipients = [def];
+      recipientsAutoApplied = true;
+    }
+  }
 
   function renderSelectedRecipients() {
     const wrap = $("#selected-recipients");
@@ -1067,6 +1084,7 @@
       chip.innerHTML = `${escapeHtml(c.name)}<button aria-label="Remove">${ICONS.x}</button>`;
       chip.querySelector("button").addEventListener("click", () => {
         selectedRecipients = selectedRecipients.filter(x => x.id !== c.id);
+        recipientsAutoApplied = false;
         onRecipientsChanged();
       });
       wrap.appendChild(chip);
@@ -1482,7 +1500,7 @@
   });
   window.addEventListener("appinstalled", () => {
     $("#install-banner").classList.remove("show");
-    toast("Notewire installed");
+    toast("Email Me installed");
   });
 
   async function doInstall() {
@@ -1548,6 +1566,7 @@
     $("#install-go").addEventListener("click", doInstall);
     $("#install-settings-btn").addEventListener("click", doInstall);
 
+    applyDefaultRecipientIfNeeded();
     onRecipientsChanged();
     renderAttachmentTray();
     renderStreak();
