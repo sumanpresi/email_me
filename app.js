@@ -1199,7 +1199,23 @@
     await sendEmail(text);
   }
 
+  const IS_MOBILE = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  function mailtoHref(toContacts, cc, bcc, subject, body) {
+    return `mailto:${toContacts.map(c => c.email).join(",")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}${cc ? "&cc=" + encodeURIComponent(cc) : ""}${bcc ? "&bcc=" + encodeURIComponent(bcc) : ""}`;
+  }
+
   function openGmailComposeFallback(toContacts, cc, bcc, subject, body) {
+    // On phones/tablets, Gmail's web compose deep link (view=cm) is unreliable —
+    // Gmail's mobile site often ignores the query params and just shows the
+    // inbox instead of a filled-in compose screen. mailto: hands off straight
+    // to the installed Gmail app instead, with everything pre-filled, so it's
+    // the primary path on mobile rather than a last-resort fallback.
+    if (IS_MOBILE) {
+      window.location.href = mailtoHref(toContacts, cc, bcc, subject, body);
+      return true;
+    }
+
     const params = new URLSearchParams();
     params.set("view", "cm"); params.set("fs", "1"); params.set("tf", "1");
     params.set("to", toContacts.map(c => c.email).join(","));
@@ -1212,7 +1228,7 @@
     const win = window.open(gmailUrl, "_blank", "noopener");
     if (!win) {
       // Pop-up blocked — mailto always works, though the OS/browser then decides which account handles it.
-      window.location.href = `mailto:${toContacts.map(c => c.email).join(",")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}${cc ? "&cc=" + encodeURIComponent(cc) : ""}${bcc ? "&bcc=" + encodeURIComponent(bcc) : ""}`;
+      window.location.href = mailtoHref(toContacts, cc, bcc, subject, body);
     }
     return !!win;
   }
@@ -1273,7 +1289,7 @@
       }
       const opened = openGmailComposeFallback(toContacts, note.cc, note.bcc, note.subject, bodyLines.join("\n"));
       note.status = "gmail_opened";
-      toast(opened ? `Gmail opened as ${state.sendingAccount || "your account"}` : "Pop-up blocked — opened your default mail app instead");
+      toast(IS_MOBILE ? "Opened your mail app — tap send there" : (opened ? `Gmail opened as ${state.sendingAccount || "your account"}` : "Pop-up blocked — opened your default mail app instead"));
     }
     saveState();
     cloudUpdateNoteStatus(note);
